@@ -1,0 +1,127 @@
+openapi: 3.1.0
+info:
+  title: CricHost Tournament API
+  version: 0.1.0
+  description: Tenant-scoped tournament configuration. Mutations require owner or admin membership and append audit/outbox records transactionally.
+servers:
+  - url: http://localhost:4000
+paths:
+  /v1/tenants/{tenantId}/tournaments:
+    parameters:
+      - { name: tenantId, in: path, required: true, schema: { type: string, pattern: "^[a-fA-F0-9]{24}$" } }
+    post:
+      summary: Create a draft tournament and freeze rules version 1
+      operationId: createTournament
+      security: [{ AccessCookie: [] }, { BearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [name, slug, season, timezone, registrationOpensAt, registrationClosesAt, startAt, endAt, format, structure, rules]
+              properties:
+                name: { type: string, minLength: 2, maxLength: 120 }
+                slug: { type: string, pattern: "^[a-z0-9]+(?:-[a-z0-9]+)*$" }
+                season: { type: string, maxLength: 40 }
+                description: { type: string, maxLength: 2000, default: "" }
+                timezone: { type: string, description: Valid IANA timezone }
+                locale: { type: string, default: en-US }
+                visibility: { type: string, enum: [PRIVATE, PUBLIC], default: PRIVATE }
+                registrationOpensAt: { type: string, format: date-time }
+                registrationClosesAt: { type: string, format: date-time }
+                startAt: { type: string, format: date-time }
+                endAt: { type: string, format: date-time }
+                format: { type: string, enum: [T10, T20, ODI, TEST, CUSTOM] }
+                structure: { type: string, enum: [KNOCKOUT, ROUND_ROBIN, GROUP_KNOCKOUT] }
+                rules: { $ref: "#/components/schemas/Rules" }
+      responses:
+        "201": { description: Draft tournament created }
+        "400": { description: Invalid fields or format/rules combination }
+        "403": { description: Owner or admin role required }
+        "409": { description: Tournament slug conflict }
+    get:
+      summary: List tenant tournaments
+      operationId: listTournaments
+      security: [{ AccessCookie: [] }, { BearerAuth: [] }]
+      parameters:
+        - { name: limit, in: query, schema: { type: integer, minimum: 1, maximum: 100, default: 50 } }
+      responses:
+        "200": { description: Tenant-scoped tournament list }
+  /v1/tenants/{tenantId}/tournaments/{tournamentId}:
+    get:
+      summary: Read a tenant tournament
+      operationId: getTournament
+      security: [{ AccessCookie: [] }, { BearerAuth: [] }]
+      parameters:
+        - { name: tenantId, in: path, required: true, schema: { type: string } }
+        - { name: tournamentId, in: path, required: true, schema: { type: string, pattern: "^[a-fA-F0-9]{24}$" } }
+      responses:
+        "200": { description: Tournament details and current rules version }
+        "404": { description: Tournament not found in this tenant }
+  /v1/tenants/{tenantId}/tournaments/{tournamentId}/rules:
+    patch:
+      summary: Replace rules for a draft tournament using optimistic concurrency
+      operationId: updateTournamentRules
+      security: [{ AccessCookie: [] }, { BearerAuth: [] }]
+      parameters:
+        - { name: tenantId, in: path, required: true, schema: { type: string } }
+        - { name: tournamentId, in: path, required: true, schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [expectedVersion, rules]
+              properties:
+                expectedVersion: { type: integer, minimum: 1 }
+                rules: { $ref: "#/components/schemas/Rules" }
+      responses:
+        "200": { description: Rules version incremented and aggregate event recorded }
+        "409": { description: Rules locked or aggregate version stale }
+  /v1/tenants/{tenantId}/tournaments/{tournamentId}/transitions:
+    post:
+      summary: Open or close tournament registration
+      operationId: transitionTournament
+      security: [{ AccessCookie: [] }, { BearerAuth: [] }]
+      parameters:
+        - { name: tenantId, in: path, required: true, schema: { type: string } }
+        - { name: tournamentId, in: path, required: true, schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [targetStatus]
+              properties:
+                targetStatus: { type: string, enum: [REGISTRATION_OPEN, REGISTRATION_CLOSED] }
+                reason: { type: string, minLength: 10, maxLength: 500, description: Required for early registration closure }
+      responses:
+        "200": { description: Transition accepted and durably audited }
+        "409": { description: Invalid lifecycle transition or configured time not reached }
+components:
+  securitySchemes:
+    AccessCookie: { type: apiKey, in: cookie, name: ch_access }
+    BearerAuth: { type: http, scheme: bearer }
+  schemas:
+    Rules:
+      type: object
+      additionalProperties: false
+      required: [inningsPerMatch, oversPerInnings]
+      properties:
+        inningsPerMatch: { type: integer, minimum: 1, maximum: 4 }
+        oversPerInnings: { type: [number, "null"], maximum: 100 }
+        ballsPerOver: { type: integer, minimum: 4, maximum: 8, default: 6 }
+        playersPerSide: { type: integer, minimum: 2, maximum: 15, default: 11 }
+        minimumSquadSize: { type: integer, minimum: 2, maximum: 30, default: 11 }
+        maximumSquadSize: { type: integer, minimum: 2, maximum: 30, default: 20 }
+        followOnEnabled: { type: boolean, default: false }
+        tiePolicy: { type: string, enum: [SUPER_OVER, DRAW, REPLAY, POINTS], default: SUPER_OVER }
+        pointsForWin: { type: integer, minimum: 0, maximum: 10, default: 2 }
+        pointsForTie: { type: integer, minimum: 0, maximum: 10, default: 1 }
+        pointsForNoResult: { type: integer, minimum: 0, maximum: 10, default: 1 }

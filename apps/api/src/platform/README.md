@@ -1,3 +1,3 @@
 # Backend platform
 
-Infrastructure adapters for configuration, persistence, HTTP middleware, logging, security and telemetry. Keep domain decisions in modules and shared contracts, not in transport adapters.
+Environment validation, MongoDB connection lifecycle, request context, HTTP error contract, security headers, CORS and process health/readiness. Production secrets and browser origins must be configured explicitly.

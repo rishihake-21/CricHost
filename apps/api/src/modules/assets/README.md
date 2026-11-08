@@ -1,3 +1,9 @@
-# assets module
+# Assets
 
-Implement this domain with schema, repository, service, policy, DTO, routes and domain events. Enforce tenant scope and business invariants at service and repository boundaries.
+This module provides tenant-scoped image upload intents and private asset metadata. Only organization owners/admins can create upload intents, scan assets, review assets or read image content. Other active tenant members may list and read asset metadata. Content is stored under generated tenant/asset keys; client filenames and object paths are never used as storage paths or returned in DTOs.
+
+The upload intent uses an HMAC-signed, one-use token bound to the tenant, asset, random nonce and expiry. The token is sent in `X-Asset-Upload-Token`, never in the URL. Upload content is raw `image/png` or `image/jpeg`, bounded by `ASSET_MAX_UPLOAD_BYTES`, checked against the declared media type and image signature, and rejected when dimensions exceed 10,000px per side or 40 megapixels. PNG text/EXIF/profile/time chunks and JPEG application/comment metadata are removed before storage. The default maximum upload size is 5 MiB and the default intent lifetime is 10 minutes.
+
+New content remains private in `PENDING_SCAN`. An owner/admin starts a ClamAV scan through the API; without `ASSET_CLAMAV_HOST`, scan requests fail closed and the asset remains private. A clean scan moves the asset to `PENDING_REVIEW`; approval then requires the current version, an audit reason, clean scan and metadata removal. Rejection can remove an asset from any non-deleted state and deletes its stored bytes. Only clean assets awaiting review or approved assets can be previewed, and preview is tenant-scoped, owner/admin-only, no-store and sandboxed.
+
+Set `ASSET_UPLOAD_SIGNING_SECRET` to a random secret of at least 32 characters, `ASSET_STORAGE_DIR` to a private persistent directory, and optionally `ASSET_CLAMAV_HOST` / `ASSET_CLAMAV_PORT`. The repository filesystem adapter is for local development and single-host evaluation. Production object storage/CDN, shared rate limiting, automatic scan jobs, general public asset delivery and usage quotas remain integration work. Sponsor campaign creatives are exposed only through eligible campaign URLs; see `../sponsors` and `docs/openapi/assets.yaml`.

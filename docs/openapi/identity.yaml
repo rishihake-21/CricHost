@@ -1,0 +1,159 @@
+openapi: 3.1.0
+info:
+  title: CricHost Identity API
+  version: 0.1.0
+  description: Local development identity contract. Production registration remains unavailable until verification email delivery is configured.
+servers:
+  - url: http://localhost:4000
+paths:
+  /v1/auth/register:
+    post:
+      summary: Register a user account
+      operationId: registerUser
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [email, displayName, password]
+              properties:
+                email: { type: string, format: email, maxLength: 254 }
+                displayName: { type: string, minLength: 2, maxLength: 80 }
+                password: { type: string, minLength: 12, maxLength: 72, description: UTF-8 encoded value must not exceed 72 bytes }
+      responses:
+        "201":
+          description: Account created; developmentVerificationToken is returned only when the local development switch is enabled.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data, meta]
+                properties:
+                  data:
+                    type: object
+                    required: [user]
+                    properties:
+                      user: { $ref: "#/components/schemas/User" }
+                      developmentVerificationToken: { type: string }
+                  meta: { $ref: "#/components/schemas/Meta" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+        "503": { $ref: "#/components/responses/Unavailable" }
+  /v1/auth/verify-email:
+    post:
+      summary: Verify an account email using a one-time token
+      operationId: verifyEmail
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [token]
+              properties:
+                token: { type: string, minLength: 32, maxLength: 200 }
+      responses:
+        "200": { description: Email verified }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+  /v1/auth/login:
+    post:
+      summary: Authenticate and establish an HTTP-only session
+      operationId: login
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [email, password]
+              properties:
+                email: { type: string, format: email }
+                password: { type: string, maxLength: 72 }
+      responses:
+        "200":
+          description: Session created. Sets ch_access and ch_refresh cookies.
+          headers:
+            Set-Cookie:
+              schema: { type: string }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+  /v1/auth/refresh:
+    post:
+      summary: Rotate the refresh token and access token
+      operationId: refreshSession
+      security: [{ RefreshCookie: [] }]
+      responses:
+        "200": { description: Session rotated; sets replacement cookies }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+  /v1/auth/logout:
+    post:
+      summary: Revoke the current session and clear cookies
+      operationId: logout
+      responses:
+        "204": { description: Session revoked and cookies cleared }
+  /v1/auth/me:
+    get:
+      summary: Return the authenticated user
+      operationId: getCurrentUser
+      security: [{ AccessCookie: [] }, { BearerAuth: [] }]
+      responses:
+        "200": { description: Current user }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+components:
+  securitySchemes:
+    AccessCookie: { type: apiKey, in: cookie, name: ch_access }
+    RefreshCookie: { type: apiKey, in: cookie, name: ch_refresh }
+    BearerAuth: { type: http, scheme: bearer }
+  schemas:
+    User:
+      type: object
+      required: [id, email, displayName, emailVerified]
+      properties:
+        id: { type: string }
+        email: { type: string, format: email }
+        displayName: { type: string }
+        emailVerified: { type: boolean }
+    Meta:
+      type: object
+      required: [requestId]
+      properties:
+        requestId: { type: string }
+    Error:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: object
+          required: [code, message, requestId]
+          properties:
+            code: { type: string }
+            message: { type: string }
+            requestId: { type: string }
+  responses:
+    BadRequest:
+      description: Invalid input or verification token
+      content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+    Unauthorized:
+      description: Authentication required or session invalid
+      content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+    Forbidden:
+      description: Account disabled or email not verified
+      content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+    Conflict:
+      description: Email already registered
+      content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+    RateLimited:
+      description: Too many attempts
+      content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+    Unavailable:
+      description: Registration disabled until email delivery is configured
+      content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }

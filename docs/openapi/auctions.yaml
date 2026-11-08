@@ -1,0 +1,412 @@
+openapi: 3.1.0
+info:
+  title: CricHost Auctions API
+  version: 0.1.0
+  description: Auction setup, scheduling, scoped bidders, approved player pool, serialized live bidding, and transactional settlement. Live operations require transaction-capable MongoDB deployment.
+servers:
+  - url: http://localhost:4000
+security:
+  - AccessCookie: []
+paths:
+  /v1/tenants/{tenantId}/tournaments/{tournamentId}/auctions:
+    parameters:
+      - { name: tenantId, in: path, required: true, schema: { type: string } }
+      - { name: tournamentId, in: path, required: true, schema: { type: string } }
+    get:
+      summary: List auctions for a tournament
+      operationId: listTournamentAuctions
+      responses:
+        "200": { description: Tenant-visible auction summaries; purse budget is omitted }
+    post:
+      summary: Create and configure the tournament auction
+      operationId: createTournamentAuction
+      description: Requires organization owner or administrator. Tournament must be registration-closed or scheduled, have two active teams, and purse settings must preserve base-price feasibility for each team's remaining minimum squad slots. Rules are frozen from the current tournament rules version.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [expectedTournamentVersion, name, slug, rules]
+              properties:
+                expectedTournamentVersion: { type: integer, minimum: 1 }
+                name: { type: string, minLength: 2, maxLength: 100 }
+                slug: { type: string, pattern: '^[a-z0-9]+(?:-[a-z0-9]+)*$', maxLength: 80 }
+                rules:
+                  type: object
+                  additionalProperties: false
+                  required: [purseBudget, basePrice, minimumIncrement]
+                  properties:
+                    purseBudget: { type: integer, minimum: 1, maximum: 1000000000, description: Internal credits only; not currency or stored value }
+                    purseUnitLabel: { type: string, minLength: 1, maxLength: 20, default: credits }
+                    basePrice: { type: integer, minimum: 1 }
+                    minimumIncrement: { type: integer, minimum: 1 }
+                    lotDurationSeconds: { type: integer, minimum: 10, maximum: 3600, default: 60 }
+                    antiSnipingExtensionSeconds: { type: integer, minimum: 0, maximum: 300, default: 0 }
+                    antiSnipingMaxExtensions: { type: integer, minimum: 0, maximum: 20, default: 0 }
+                    unsoldPolicy: { type: string, enum: [CLOSE, REOFFER], default: CLOSE }
+                    maxUnsoldReoffers: { type: integer, minimum: 0, maximum: 5, default: 0 }
+      responses:
+        "201": { description: Auction, team purse accounts, and opening ledger entries created transactionally }
+        "400": { description: Invalid settings or purse cannot fund minimum squad feasibility }
+        "403": { description: Organization owner/admin permission required }
+        "409": { description: Stale tournament, insufficient teams, or auction already exists }
+  /v1/tenants/{tenantId}/auctions/{auctionId}:
+    get:
+      summary: Read an auction without team purse budgets
+      operationId: getAuction
+      parameters:
+        - { name: tenantId, in: path, required: true, schema: { type: string } }
+        - { name: auctionId, in: path, required: true, schema: { type: string } }
+      responses:
+        "200": { description: Auction status and frozen public settings }
+        "404": { description: Auction was not found }
+  /v1/tenants/{tenantId}/auctions/{auctionId}/cancel:
+    post:
+      summary: Cancel an auction draft
+      operationId: cancelDraftAuction
+      description: Owner/admin only. Allowed only before pool approval; cancelling preserves purse history and releases the tournament's direct-roster lock.
+      parameters:
+        - { name: tenantId, in: path, required: true, schema: { type: string } }
+        - { name: auctionId, in: path, required: true, schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [expectedAuctionVersion, reason]
+              properties:
+                expectedAuctionVersion: { type: integer, minimum: 1 }
+                reason: { type: string, minLength: 10, maxLength: 500 }
+      responses:
+        "200": { description: Draft cancelled with audit/outbox records }
+        "409": { description: Stale version or player pool already approved }
+  /v1/tenants/{tenantId}/auctions/{auctionId}/teams/{teamId}/bidders:
+    parameters:
+      - { name: tenantId, in: path, required: true, schema: { type: string } }
+      - { name: auctionId, in: path, required: true, schema: { type: string } }
+      - { name: teamId, in: path, required: true, schema: { type: string } }
+    get:
+      summary: List active bidders for a team
+      operationId: listAuctionBidders
+      description: Requires the team owner or organization owner/admin.
+      responses:
+        "200": { description: Assigned bidder identities and assignment times }
+        "403": { description: Team owner or organization admin permission required }
+    post:
+      summary: Assign an authorized team bidder to the auction
+      operationId: assignAuctionBidder
+      description: Target must be an active organization member and already hold the team's BIDDER role.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [userId]
+              properties:
+                userId: { type: string, pattern: '^[a-fA-F0-9]{24}$' }
+      responses:
+        "201": { description: Auction bidder assigned and audited }
+        "403": { description: Team bidder assignment or manager permission is missing }
+        "409": { description: Assignment already exists }
+  /v1/tenants/{tenantId}/auctions/{auctionId}/teams/{teamId}/bidders/{userId}/remove:
+    post:
+      summary: Remove an auction bidder assignment
+      operationId: removeAuctionBidder
+      description: Requires team owner or organization owner/admin. Each team must retain one active bidder after pool approval.
+      parameters:
+        - { name: tenantId, in: path, required: true, schema: { type: string } }
+        - { name: auctionId, in: path, required: true, schema: { type: string } }
+        - { name: teamId, in: path, required: true, schema: { type: string } }
+        - { name: userId, in: path, required: true, schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [reason]
+              properties:
+                reason: { type: string, minLength: 10, maxLength: 500 }
+      responses:
+        "200": { description: Assignment marked removed and audited }
+        "409": { description: Team must retain an active bidder }
+  /v1/tenants/{tenantId}/auctions/{auctionId}/pool/approve:
+    post:
+      summary: Generate and approve the stable auction player pool
+      operationId: approveAuctionPool
+      description: Requires organization owner/admin. Uses approved registrations without active direct roster entries, snapshots allowlisted cricket fields, and requires at least one active bidder for every auction team. Direct roster edits are locked from auction creation onward.
+      parameters:
+        - { name: tenantId, in: path, required: true, schema: { type: string } }
+        - { name: auctionId, in: path, required: true, schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [expectedAuctionVersion, seed]
+              properties:
+                expectedAuctionVersion: { type: integer, minimum: 1 }
+                seed: { type: string, minLength: 1, maxLength: 100 }
+      responses:
+        "201": { description: Seeded lot order saved and auction moved to POOL_APPROVED }
+        "409": { description: Stale version, incomplete bidder assignments, empty pool, or wrong auction state }
+  /v1/tenants/{tenantId}/auctions/{auctionId}/lots:
+    get:
+      summary: List the approved auction lots
+      operationId: listAuctionLots
+      parameters:
+        - { name: tenantId, in: path, required: true, schema: { type: string } }
+        - { name: auctionId, in: path, required: true, schema: { type: string } }
+      responses:
+        "200": { description: Stable lot number, allowlisted player snapshot, attempt and reoffer counts, and lot state }
+  /v1/tenants/{tenantId}/auctions/{auctionId}/schedule:
+    post:
+      summary: Schedule a pool-approved auction
+      operationId: scheduleAuction
+      description: Owner/admin only. Scheduled time must be in the future and within the frozen tournament date window.
+      parameters:
+        - { name: tenantId, in: path, required: true, schema: { type: string } }
+        - { name: auctionId, in: path, required: true, schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [expectedAuctionVersion, scheduledAt]
+              properties:
+                expectedAuctionVersion: { type: integer, minimum: 1 }
+                scheduledAt: { type: string, format: date-time }
+      responses:
+        "200": { description: Auction scheduled and audited }
+        "409": { description: Stale version or tournament configuration changed }
+  /v1/tenants/{tenantId}/auctions/{auctionId}/start:
+    post:
+      summary: Start a due scheduled auction
+      operationId: startAuction
+      description: Owner/admin only. Requires every team to have an active organization member with both a team BIDDER role and an auction assignment.
+      parameters:
+        - { name: tenantId, in: path, required: true, schema: { type: string } }
+        - { name: auctionId, in: path, required: true, schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [expectedAuctionVersion]
+              properties:
+                expectedAuctionVersion: { type: integer, minimum: 1 }
+      responses:
+        "200": { description: Auction moved to LIVE }
+        "409": { description: Auction is not due, version is stale, or bidder coverage is incomplete }
+  /v1/tenants/{tenantId}/auctions/{auctionId}/open-next-lot:
+    post:
+      summary: Open the next queued lot
+      operationId: openNextAuctionLot
+      description: Owner/admin only for manual operation; the auction timer worker also opens the first/next lot. Opens at most one lot; retries return the already open lot. When the queue is exhausted, eligible unsold players are reoffered up to the configured bound, then the auction completes.
+      parameters:
+        - { name: tenantId, in: path, required: true, schema: { type: string } }
+        - { name: auctionId, in: path, required: true, schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [expectedAuctionVersion]
+              properties:
+                expectedAuctionVersion: { type: integer, minimum: 1 }
+      responses:
+        "200": { description: Auction and opened lot, or completed auction when the queue is exhausted }
+        "409": { description: Stale version or inconsistent current-lot state }
+  /v1/tenants/{tenantId}/auctions/{auctionId}/pause:
+    post:
+      summary: Pause a live auction
+      operationId: pauseAuction
+      description: Owner/admin only. Pausing also marks the current lot PAUSED and records its remaining timer duration. Bids and timer settlement stop until resume.
+      parameters:
+        - { name: tenantId, in: path, required: true, schema: { type: string } }
+        - { name: auctionId, in: path, required: true, schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [expectedAuctionVersion, reason]
+              properties:
+                expectedAuctionVersion: { type: integer, minimum: 1 }
+                reason: { type: string, minLength: 10, maxLength: 500 }
+      responses:
+        "200": { description: Auction paused with the current lot's remaining timer preserved }
+        "409": { description: Stale version or current-lot invariant failure }
+  /v1/tenants/{tenantId}/auctions/{auctionId}/resume:
+    post:
+      summary: Resume a paused auction
+      operationId: resumeAuction
+      description: Owner/admin only. Reopens the paused current lot with its saved remaining duration. If no lot was open, the timer worker opens the next queued lot.
+      parameters:
+        - { name: tenantId, in: path, required: true, schema: { type: string } }
+        - { name: auctionId, in: path, required: true, schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [expectedAuctionVersion, reason]
+              properties:
+                expectedAuctionVersion: { type: integer, minimum: 1 }
+                reason: { type: string, minLength: 10, maxLength: 500 }
+      responses:
+        "200": { description: Auction resumed and audited }
+        "409": { description: Stale version or paused-lot timer invariant failure }
+  /v1/tenants/{tenantId}/auctions/{auctionId}/lots/{lotId}/bids:
+    post:
+      summary: Place an idempotent team bid
+      operationId: placeAuctionBid
+      description: Requires an active assigned bidder authorized for the submitted team. Each accepted bid locks the lot and purse account transactionally, checks the lot version and closing time, and may extend the timer within configured bounds. Reuse the same UUID idempotency key only when retrying the same intent.
+      parameters:
+        - { name: tenantId, in: path, required: true, schema: { type: string } }
+        - { name: auctionId, in: path, required: true, schema: { type: string } }
+        - { name: lotId, in: path, required: true, schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [teamId, amount, expectedLotVersion, idempotencyKey]
+              properties:
+                teamId: { type: string, pattern: '^[a-fA-F0-9]{24}$' }
+                amount: { type: integer, minimum: 1, maximum: 1000000000 }
+                expectedLotVersion: { type: integer, minimum: 1 }
+                idempotencyKey: { type: string, format: uuid }
+      responses:
+        "201": { description: Bid accepted; response includes the new bid and lot versions }
+        "200": { description: Idempotent replay of an accepted bid }
+        "403": { description: No active team-scoped bidder authorization }
+        "409": { description: Stale lot, closed timer, below-minimum bid, insufficient purse, or squad reserve violation }
+    get:
+      summary: Read tenant-scoped bid history
+      operationId: listAuctionBidHistory
+      description: Requires active tenant membership. Returns accepted bid sequence, team, amount, time and lot version; bidder identity, idempotency keys and purse balances are omitted.
+      parameters:
+        - { name: tenantId, in: path, required: true, schema: { type: string } }
+        - { name: auctionId, in: path, required: true, schema: { type: string } }
+        - { name: lotId, in: path, required: true, schema: { type: string } }
+        - { name: limit, in: query, required: false, schema: { type: integer, minimum: 1, maximum: 100, default: 50 } }
+        - { name: beforeSequence, in: query, required: false, schema: { type: integer, minimum: 1, description: Exclusive sequence cursor for descending history pagination } }
+      responses:
+        "200": { description: Bounded bid page and optional next sequence cursor }
+        "404": { description: Auction or lot was not found in this tenant }
+  /v1/tenants/{tenantId}/auctions/{auctionId}/lots/{lotId}/finalize:
+    post:
+      summary: Finalize an expired current lot
+      operationId: finalizeAuctionLot
+      description: Owner/admin only for manual operation; the auction timer worker finalizes expired lots automatically. A sold result commits the reservation and applies the auction roster assignment within the same transaction. Result creation is repeat-safe for the same lot version.
+      parameters:
+        - { name: tenantId, in: path, required: true, schema: { type: string } }
+        - { name: auctionId, in: path, required: true, schema: { type: string } }
+        - { name: lotId, in: path, required: true, schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [expectedLotVersion]
+              properties:
+                expectedLotVersion: { type: integer, minimum: 1 }
+      responses:
+        "200": { description: Sold or unsold result, including idempotent replay indicator }
+        "409": { description: Stale version, active timer, or settlement invariant conflict requiring operator review }
+  /v1/tenants/{tenantId}/auctions/{auctionId}/purses:
+    get:
+      summary: List all team purse accounts
+      operationId: listAuctionPurses
+      description: Organization owner/admin only. General tenant auction reads omit purse budgets.
+      parameters:
+        - { name: tenantId, in: path, required: true, schema: { type: string } }
+        - { name: auctionId, in: path, required: true, schema: { type: string } }
+      responses:
+        "200": { description: Budget, reserved, committed and available internal credits by team }
+        "403": { description: Organization owner/admin permission required }
+  /v1/tenants/{tenantId}/auctions/{auctionId}/teams/{teamId}/purse:
+    get:
+      summary: Read one team's purse
+      operationId: getTeamAuctionPurse
+      description: Organization admins, team owners, and active bidders assigned to that team may read its purse.
+      parameters:
+        - { name: tenantId, in: path, required: true, schema: { type: string } }
+        - { name: auctionId, in: path, required: true, schema: { type: string } }
+        - { name: teamId, in: path, required: true, schema: { type: string } }
+      responses:
+        "200": { description: Budget, reserved, committed, available, acquired players and remaining slots }
+        "403": { description: Team-scoped purse access required }
+  /public/v1/tournaments/{tournamentId}/auction:
+    get:
+      summary: Read a public tournament auction snapshot
+      operationId: getPublicAuctionSnapshot
+      security: []
+      description: Available only for a public tournament with a scheduled, live, paused, completed or archived auction. The snapshot omits purse budgets and bidder identities. Player details are returned only while the player's current profile visibility is PUBLIC. Responses use no-store cache policy and are rate limited.
+      parameters:
+        - { name: tournamentId, in: path, required: true, schema: { type: string, pattern: '^[a-fA-F0-9]{24}$' } }
+        - { name: limit, in: query, required: false, schema: { type: integer, minimum: 1, maximum: 100, default: 25 } }
+        - { name: afterLotNumber, in: query, required: false, schema: { type: integer, minimum: 0, description: Exclusive lot-number cursor for the public catalogue } }
+      responses:
+        "200": { description: Versioned auction/current-lot snapshot, bounded public catalogue, recent bids and recent results }
+        "404": { description: Public tournament or visible auction was not found }
+        "429": { description: Public read rate limit exceeded }
+  /public/v1/tournaments/{tournamentId}/auction/results:
+    get:
+      summary: Read public auction results
+      operationId: listPublicAuctionResults
+      security: []
+      description: Returns sold/unsold result history for a public tournament. Player details appear only while the current profile visibility is PUBLIC; private contact and profile fields are never returned. Responses use no-store cache policy and are rate limited.
+      parameters:
+        - { name: tournamentId, in: path, required: true, schema: { type: string, pattern: '^[a-fA-F0-9]{24}$' } }
+        - { name: limit, in: query, required: false, schema: { type: integer, minimum: 1, maximum: 100, default: 50 } }
+        - { name: beforeId, in: query, required: false, schema: { type: string, pattern: '^[a-fA-F0-9]{24}$', description: Exclusive result ID cursor for descending pagination } }
+      responses:
+        "200": { description: Bounded result page with optional next cursor }
+        "404": { description: Public tournament or visible auction was not found }
+        "429": { description: Public read rate limit exceeded }
+  /public/v1/tournaments/{tournamentId}/auction/events:
+    get:
+      summary: Subscribe to public auction event notices
+      operationId: streamPublicAuctionEvents
+      security: []
+      description: Opens an SSE stream for a public tournament auction. On connect/reconnect and after transport recovery, clients receive snapshot_required and must fetch the public auction snapshot. Redis Pub/Sub does not replay missed events; event notices are advisory and may be duplicated. Only allowlisted public fields are emitted. Stream caps and connection limits are process-local.
+      parameters:
+        - { name: tournamentId, in: path, required: true, schema: { type: string, pattern: '^[a-fA-F0-9]{24}$' } }
+        - { name: Last-Event-ID, in: header, required: false, schema: { type: string }, description: Accepted by browsers on automatic reconnect; missed events are recovered from the snapshot rather than replayed }
+      responses:
+        "200":
+          description: Server-Sent Events stream. Event names include auction.scheduled, auction.started, auction.paused, auction.resumed, auction.lot.opened, auction.lot.reoffered, auction.bid.accepted, auction.lot.sold, auction.lot.unsold, auction.completed and snapshot_required.
+          content:
+            text/event-stream:
+              schema: { type: string }
+        "404": { description: Public tournament or visible auction was not found }
+        "429": { description: Connection rate or per-IP active-stream limit exceeded }
+        "503": { description: Realtime dependency or stream capacity is unavailable }
+components:
+  securitySchemes:
+    AccessCookie: { type: apiKey, in: cookie, name: ch_access }

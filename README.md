@@ -4,7 +4,7 @@ Multi-tenant cricket tournament operations SaaS. This repository is the implemen
 
 ## Current state
 
-This is a clean TypeScript monorepo scaffold, not a production implementation. It defines deployable process boundaries and domain module locations. Authentication, tenant policy enforcement, tournament workflows, auction, scoring, billing, integrations, observability and production infrastructure remain to be implemented and reviewed.
+This is an early TypeScript monorepo implementation. The backend foundation includes local identity/session flows, tenant provisioning and membership administration, audit/outbox publication, tournament configuration, independent player profiles and registrations, tournament teams and roster rights, first-pass round-robin fixture generation, auction setup/live bidding/settlement/timer progression/public snapshots/SSE, fixture-backed match/scoring with scorer fencing, audited correction replay, initial limited-overs adjudication, transactional standings, public match snapshots/SSE notices, tenant-scoped signed asset uploads with scan/moderation gates, and sponsor profiles/campaigns with reserved placements and public creative delivery. Production invitation delivery, object storage/CDN, automatic media scanning, campaign analytics and quotas, knockout scheduling, venue assignment, authenticated realtime rooms, full cricket scoring rules, public player-by-player scorecards, billing, observability and infrastructure remain to be built and reviewed.
 
 ## Proposed baseline
 
@@ -18,16 +18,16 @@ This is a clean TypeScript monorepo scaffold, not a production implementation. I
 
 ## Repository map
 
-`apps/web` contains public portal and authenticated workspace. `apps/api` contains versioned HTTP endpoints and domain modules. `apps/realtime` owns authorized Socket.IO/SSE delivery. `apps/worker` runs outbox, timer, projection and scheduled jobs. `packages/contracts` contains shared schemas and API types. `packages/config` contains shared lint/TypeScript conventions. `docs/adr` records decisions. `docs/openapi` is the contract source. `infra` holds local development and deployment definitions.
+`apps/web` contains public portal and authenticated workspace. `apps/api` contains versioned HTTP endpoints and domain modules. `apps/realtime` owns public auction SSE delivery and is the home for future authorized Socket.IO rooms. `apps/worker` runs outbox, timer, projection and scheduled jobs. `packages/contracts` contains shared schemas and API types. `packages/config` contains shared lint/TypeScript conventions. `docs/adr` records decisions. `docs/openapi` is the contract source. `infra` holds local development and deployment definitions.
 
 ## Start here
 
 1. Review the development blueprint and close Gate 0 decisions before committing to production data semantics.
 2. Install Node.js 20 LTS or newer and pnpm 9 or newer; enable Corepack or install pnpm through the approved toolchain.
-3. Copy `.env.example` to `.env.local`, set local service URLs, and start local services with `docker compose up -d`.
-4. Run `pnpm install`, then `pnpm dev` after application packages are implemented.
+3. Copy `.env.example` to `.env`, set local service URLs, and start local services with `docker compose up -d`.
+4. Run `pnpm install`, then `pnpm dev` after application packages are implemented. Start the independent auction timer process with `pnpm auction-worker` when testing live auctions.
 
-The commands are intended workflow; dependencies and a lockfile are not included, so this scaffold is not runnable end-to-end yet.
+The commands are intended workflow; dependencies and a lockfile are not included yet. Local registration requires `IDENTITY_EXPOSE_DEV_TOKENS=true` to return the one-time verification token. Keep it disabled in production.
 
 ## Product boundary
 

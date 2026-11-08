@@ -1,3 +1,5 @@
-# tournaments module
+# Tournament module
 
-Implement this domain with schema, repository, service, policy, DTO, routes and domain events. Enforce tenant scope and business invariants at service and repository boundaries.
+Implements tenant-scoped tournament create/list/read, draft-only versioned rules updates, and the initial registration-open/registration-close transitions. Mutations are guarded by OWNER/ADMIN membership, use optimistic aggregate versions for rules changes, and write audit/outbox records in the same MongoDB transaction. Tournament IDs are always queried with tenant scope.
+
+Supported configured formats are T10, T20, ODI, TEST and CUSTOM. Initial validation covers innings, overs, balls per over, playing side, squad bounds, follow-on flag, tie policy, points for wins/ties/no-results, timezone, locale and schedule ordering. Test matches require two or four innings and no fixed overs limit. The tournament lifecycle currently reaches SCHEDULED through first-pass round-robin fixture generation; fixture-backed matches can transition scheduled/live/completed with transactional standings. Knockout and group-knockout generation, venue assignment, versioned schedule changes and later tournament-level lifecycle transitions remain future modules.

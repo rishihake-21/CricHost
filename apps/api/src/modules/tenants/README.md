@@ -1,3 +1,5 @@
-# tenants module
+# Tenant module
 
-Implement this domain with schema, repository, service, policy, DTO, routes and domain events. Enforce tenant scope and business invariants at service and repository boundaries.
+Creates organizations and their initial owner membership in one MongoDB transaction with an audit record and `tenant.created` outbox event. Exposes a verified user's own tenant list, tenant read for active members, and member list for owners/admins. Slugs are globally unique and reserved platform slugs are rejected.
+
+Membership roles are OWNER, ADMIN and MEMBER. Owners/admins can create, list and revoke invitations; invited users must sign in with the verified invited email to accept. Role changes and member removal are audited. Owners alone can grant/revoke administrator access; neither owners nor admins can remove the owner, and admins cannot manage other administrators. Invitation tokens are hashed at rest and exposed only in local development when `IDENTITY_EXPOSE_DEV_TOKENS=true`; production creation fails closed until email delivery exists. Team-staff rights are revoked when a tenant membership is removed. Plan quotas and platform-super-admin operations remain unimplemented. Every new tenant-owned repository must require tenant scope and deny access by default.

@@ -1,0 +1,182 @@
+openapi: 3.1.0
+info:
+  title: CricHost Tenant API
+  version: 0.1.0
+  description: Verified-account organization, invitation and membership administration. Tenant mutations are tenant-scoped and audited transactionally.
+servers:
+  - url: http://localhost:4000
+paths:
+  /v1/tenants:
+    post:
+      summary: Create an organization and become its owner
+      operationId: createTenant
+      security: [{ AccessCookie: [] }, { BearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [name, slug]
+              properties:
+                name: { type: string, minLength: 2, maxLength: 120 }
+                slug: { type: string, pattern: "^[a-z0-9]+(?:-[a-z0-9]+)*$", maxLength: 80 }
+                timezone: { type: string, default: UTC, description: Valid IANA timezone }
+                locale: { type: string, default: en-US, description: Valid BCP 47 locale }
+      responses:
+        "201": { description: Tenant and owner membership created }
+        "400": { description: Invalid tenant fields }
+        "401": { description: Authentication required }
+        "403": { description: Email verification required }
+        "409": { description: Slug is already in use }
+    get:
+      summary: List the authenticated user's active organizations
+      operationId: listMyTenants
+      security: [{ AccessCookie: [] }, { BearerAuth: [] }]
+      responses:
+        "200": { description: Tenant list with the caller's membership role }
+        "401": { description: Authentication required }
+  /v1/tenants/{tenantId}:
+    get:
+      summary: Read an organization the caller belongs to
+      operationId: getTenant
+      security: [{ AccessCookie: [] }, { BearerAuth: [] }]
+      parameters:
+        - { name: tenantId, in: path, required: true, schema: { type: string, pattern: "^[a-fA-F0-9]{24}$" } }
+      responses:
+        "200": { description: Tenant details }
+        "404": { description: Tenant does not exist or caller is not a member }
+  /v1/tenants/{tenantId}/members:
+    get:
+      summary: List active members for tenant owners and admins
+      operationId: listTenantMembers
+      security: [{ AccessCookie: [] }, { BearerAuth: [] }]
+      parameters:
+        - { name: tenantId, in: path, required: true, schema: { type: string, pattern: "^[a-fA-F0-9]{24}$" } }
+      responses:
+        "200": { description: Tenant member list }
+        "403": { description: Owner or admin role required }
+        "404": { description: Tenant does not exist or caller is not a member }
+  /v1/tenants/{tenantId}/invitations:
+    parameters:
+      - { name: tenantId, in: path, required: true, schema: { type: string, pattern: "^[a-fA-F0-9]{24}$" } }
+    get:
+      summary: List unexpired pending invitations
+      operationId: listTenantInvitations
+      security: [{ AccessCookie: [] }, { BearerAuth: [] }]
+      responses:
+        "200": { description: Pending invitation email, role and expiration metadata }
+        "403": { description: Owner or admin role required }
+    post:
+      summary: Invite an email address to the organization
+      operationId: createTenantInvitation
+      description: Only organization owners may invite administrators. A development token is returned only when IDENTITY_EXPOSE_DEV_TOKENS is enabled; production requests fail until email delivery is configured.
+      security: [{ AccessCookie: [] }, { BearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [email]
+              properties:
+                email: { type: string, format: email, maxLength: 254 }
+                role: { type: string, enum: [ADMIN, MEMBER], default: MEMBER }
+      responses:
+        "201": { description: Single-use invitation created; raw token is present only in development responses }
+        "403": { description: Insufficient role to invite the requested membership role }
+        "409": { description: Active member or pending invitation already exists }
+        "503": { description: Invitation email provider is not configured }
+  /v1/tenants/{tenantId}/invitations/{invitationId}/accept:
+    post:
+      summary: Accept an invitation using a verified matching account
+      operationId: acceptTenantInvitation
+      security: [{ AccessCookie: [] }, { BearerAuth: [] }]
+      parameters:
+        - { name: tenantId, in: path, required: true, schema: { type: string, pattern: "^[a-fA-F0-9]{24}$" } }
+        - { name: invitationId, in: path, required: true, schema: { type: string, pattern: "^[a-fA-F0-9]{24}$" } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [token]
+              properties:
+                token: { type: string, minLength: 32, maxLength: 128 }
+      responses:
+        "200": { description: Membership activated and invitation consumed transactionally }
+        "400": { description: Invitation token is invalid, expired, or consumed }
+        "403": { description: Account email is unverified or does not match the invitee email }
+        "409": { description: Membership is already active or suspended }
+  /v1/tenants/{tenantId}/invitations/{invitationId}/revoke:
+    post:
+      summary: Revoke a pending invitation
+      operationId: revokeTenantInvitation
+      security: [{ AccessCookie: [] }, { BearerAuth: [] }]
+      parameters:
+        - { name: tenantId, in: path, required: true, schema: { type: string, pattern: "^[a-fA-F0-9]{24}$" } }
+        - { name: invitationId, in: path, required: true, schema: { type: string, pattern: "^[a-fA-F0-9]{24}$" } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [reason]
+              properties:
+                reason: { type: string, minLength: 10, maxLength: 500 }
+      responses:
+        "200": { description: Invitation revoked or marked expired and audit event written }
+        "403": { description: Owner or admin role required; only owners can revoke admin invitations }
+  /v1/tenants/{tenantId}/members/{userId}/role:
+    patch:
+      summary: Change an active member's role
+      operationId: updateTenantMemberRole
+      security: [{ AccessCookie: [] }, { BearerAuth: [] }]
+      parameters:
+        - { name: tenantId, in: path, required: true, schema: { type: string, pattern: "^[a-fA-F0-9]{24}$" } }
+        - { name: userId, in: path, required: true, schema: { type: string, pattern: "^[a-fA-F0-9]{24}$" } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [role]
+              properties:
+                role: { type: string, enum: [ADMIN, MEMBER] }
+      responses:
+        "200": { description: Membership role changed with audit and outbox records }
+        "403": { description: Only owners may grant or change administrator privileges }
+        "404": { description: Member was not found or is the organization owner }
+  /v1/tenants/{tenantId}/members/{userId}/remove:
+    post:
+      summary: Remove a member without deleting membership history
+      operationId: removeTenantMember
+      security: [{ AccessCookie: [] }, { BearerAuth: [] }]
+      parameters:
+        - { name: tenantId, in: path, required: true, schema: { type: string, pattern: "^[a-fA-F0-9]{24}$" } }
+        - { name: userId, in: path, required: true, schema: { type: string, pattern: "^[a-fA-F0-9]{24}$" } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [reason]
+              properties:
+                reason: { type: string, minLength: 10, maxLength: 500 }
+      responses:
+        "200": { description: Membership marked removed; active team staff assignments are revoked }
+        "403": { description: Only owners may remove administrators; organization owners cannot be removed }
+components:
+  securitySchemes:
+    AccessCookie: { type: apiKey, in: cookie, name: ch_access }
+    BearerAuth: { type: http, scheme: bearer }

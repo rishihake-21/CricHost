@@ -3,13 +3,21 @@
   "private": true,
   "version": "0.1.0",
   "packageManager": "pnpm@9.15.0",
-  "engines": { "node": ">=20.0.0" },
+  "engines": {
+    "node": ">=20.0.0"
+  },
   "scripts": {
     "dev": "pnpm --parallel --filter @crichost/web --filter @crichost/api dev",
     "build": "pnpm -r build",
     "typecheck": "pnpm -r typecheck",
     "lint": "pnpm -r lint",
-    "format": "prettier --write ."
+    "format": "prettier --write .",
+    "worker": "pnpm --filter @crichost/api worker",
+    "auction-worker": "pnpm --filter @crichost/api auction-worker",
+    "realtime": "pnpm --filter @crichost/realtime dev"
   },
-  "devDependencies": { "prettier": "^3.4.2", "typescript": "^5.7.2" }
+  "devDependencies": {
+    "prettier": "^3.4.2",
+    "typescript": "^5.7.2"
+  }
 }

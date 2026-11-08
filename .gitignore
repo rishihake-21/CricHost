@@ -1,6 +1,7 @@
 node_modules/
 dist/
 coverage/
+var/assets/
 .env
 .env.*
 !.env.example

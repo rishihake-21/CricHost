@@ -1,0 +1,141 @@
+openapi: 3.1.0
+info:
+  title: CricHost Player and Registration API
+  version: 0.1.0
+  description: Player profiles are independent from tenants and teams. Applications store a consented profile snapshot.
+servers:
+  - url: http://localhost:4000
+paths:
+  /v1/player-profiles:
+    post:
+      summary: Create the authenticated user's player profile
+      operationId: createPlayerProfile
+      security: [{ AccessCookie: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [displayName, playingRole, battingHand, bowlingStyle, consentToCreateProfile]
+              properties:
+                displayName: { type: string, minLength: 2, maxLength: 80 }
+                bio: { type: string, maxLength: 500, default: "" }
+                locationLabel: { type: string, maxLength: 80, description: Coarse public location only; no street address }
+                playingRole: { type: string, enum: [BATTER, BOWLER, ALL_ROUNDER, WICKETKEEPER, UNKNOWN] }
+                battingHand: { type: string, enum: [LEFT, RIGHT, UNKNOWN] }
+                bowlingStyle: { type: string, enum: [RIGHT_ARM_FAST, RIGHT_ARM_MEDIUM, RIGHT_ARM_OFF_BREAK, RIGHT_ARM_LEG_BREAK, LEFT_ARM_FAST, LEFT_ARM_MEDIUM, LEFT_ARM_ORTHODOX, LEFT_ARM_WRIST_SPIN, NONE, OTHER, UNKNOWN] }
+                wicketkeeper: { type: boolean, default: false }
+                preferredFormats: { type: array, maxItems: 5, uniqueItems: true, items: { type: string, enum: [T10, T20, ODI, TEST, CUSTOM] } }
+                visibility: { type: string, enum: [PUBLIC, TOURNAMENTS_ONLY, PRIVATE], default: TOURNAMENTS_ONLY }
+                consentToCreateProfile: { type: boolean, const: true }
+      responses:
+        "201": { description: Profile created with initial aggregate version 1 }
+        "400": { description: Invalid profile or consent missing }
+        "409": { description: Account already has a player profile }
+  /v1/player-profiles/me:
+    get:
+      summary: Read the authenticated user's profile
+      operationId: getMyPlayerProfile
+      security: [{ AccessCookie: [] }]
+      responses:
+        "200": { description: Allowlisted profile fields and aggregate version }
+        "404": { description: No active profile exists }
+    patch:
+      summary: Replace editable profile fields using optimistic concurrency
+      operationId: updateMyPlayerProfile
+      security: [{ AccessCookie: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [expectedVersion, displayName, playingRole, battingHand, bowlingStyle, consentToVisibility]
+              properties:
+                expectedVersion: { type: integer, minimum: 1 }
+                displayName: { type: string, minLength: 2, maxLength: 80 }
+                bio: { type: string, maxLength: 500 }
+                locationLabel: { type: string, maxLength: 80 }
+                playingRole: { type: string, enum: [BATTER, BOWLER, ALL_ROUNDER, WICKETKEEPER, UNKNOWN] }
+                battingHand: { type: string, enum: [LEFT, RIGHT, UNKNOWN] }
+                bowlingStyle: { type: string, enum: [RIGHT_ARM_FAST, RIGHT_ARM_MEDIUM, RIGHT_ARM_OFF_BREAK, RIGHT_ARM_LEG_BREAK, LEFT_ARM_FAST, LEFT_ARM_MEDIUM, LEFT_ARM_ORTHODOX, LEFT_ARM_WRIST_SPIN, NONE, OTHER, UNKNOWN] }
+                wicketkeeper: { type: boolean }
+                preferredFormats: { type: array, maxItems: 5, uniqueItems: true, items: { type: string, enum: [T10, T20, ODI, TEST, CUSTOM] } }
+                visibility: { type: string, enum: [PUBLIC, TOURNAMENTS_ONLY, PRIVATE] }
+                consentToVisibility: { type: boolean, const: true }
+      responses:
+        "200": { description: Profile updated; consent timestamp and version recorded }
+        "409": { description: Stale profile version }
+  /v1/tenants/{tenantId}/tournaments/{tournamentId}/registrations:
+    parameters:
+      - { name: tenantId, in: path, required: true, schema: { type: string } }
+      - { name: tournamentId, in: path, required: true, schema: { type: string } }
+    post:
+      summary: Apply the caller's player profile to a public open tournament
+      operationId: applyToTournament
+      security: [{ AccessCookie: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [consentToParticipate]
+              properties:
+                consentToParticipate: { type: boolean, const: true }
+      responses:
+        "201": { description: Application created with immutable profile snapshot }
+        "404": { description: Tournament not found, not public, or identifier invalid }
+        "409": { description: No profile, registration closed, or already applied }
+        "429": { description: Rate limit reached }
+    get:
+      summary: List applications for tenant owners and administrators
+      operationId: listTournamentRegistrations
+      security: [{ AccessCookie: [] }]
+      parameters:
+        - { name: limit, in: query, schema: { type: integer, minimum: 1, maximum: 100, default: 50 } }
+      responses:
+        "200": { description: Applications with consented profile snapshots }
+        "403": { description: Owner or admin membership required }
+  /v1/tenants/{tenantId}/tournaments/{tournamentId}/registrations/me:
+    get:
+      summary: Read the caller's own application
+      operationId: getMyRegistration
+      security: [{ AccessCookie: [] }]
+      parameters:
+        - { name: tenantId, in: path, required: true, schema: { type: string } }
+        - { name: tournamentId, in: path, required: true, schema: { type: string } }
+      responses:
+        "200": { description: Caller-owned application }
+        "404": { description: Application not found }
+  /v1/tenants/{tenantId}/tournaments/{tournamentId}/registrations/{registrationId}/decision:
+    post:
+      summary: Approve or reject a pending application
+      operationId: decideRegistration
+      security: [{ AccessCookie: [] }]
+      parameters:
+        - { name: tenantId, in: path, required: true, schema: { type: string } }
+        - { name: tournamentId, in: path, required: true, schema: { type: string } }
+        - { name: registrationId, in: path, required: true, schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [decision]
+              properties:
+                decision: { type: string, enum: [APPROVE, REJECT] }
+                reason: { type: string, minLength: 10, maxLength: 500, description: Required for rejection }
+      responses:
+        "200": { description: Decision recorded with audit and outbox event }
+        "403": { description: Owner or admin membership required }
+        "409": { description: Application is no longer pending }
+components:
+  securitySchemes:
+    AccessCookie: { type: apiKey, in: cookie, name: ch_access }

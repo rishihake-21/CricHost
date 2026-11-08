@@ -1,0 +1,361 @@
+openapi: 3.1.0
+info:
+  title: CricHost Matches and Scoring API
+  version: 0.1.0
+  description: Tenant-private match setup and scoring plus allowlisted public match snapshots and SSE version notices. Requires MongoDB transactions.
+servers:
+  - url: http://localhost:4000
+security:
+  - AccessCookie: []
+paths:
+  /v1/tenants/{tenantId}/tournaments/{tournamentId}/fixtures/{fixtureId}/match:
+    post:
+      summary: Create a match from a scheduled fixture
+      operationId: createMatchFromFixture
+      description: Owner/admin only. Freezes the tournament rules version and fixture team/schedule snapshots. A fixture can have only one match.
+      parameters:
+        - { name: tenantId, in: path, required: true, schema: { type: string } }
+        - { name: tournamentId, in: path, required: true, schema: { type: string } }
+        - { name: fixtureId, in: path, required: true, schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [expectedFixtureVersion]
+              properties:
+                expectedFixtureVersion: { type: integer, minimum: 1 }
+      responses:
+        "201": { description: Match created with frozen rules and fixture snapshots }
+        "403": { description: Organization owner/admin permission required }
+        "404": { description: Fixture or tournament was not found }
+        "409": { description: Stale fixture, invalid tournament lifecycle, or match already exists }
+  /v1/tenants/{tenantId}/tournaments/{tournamentId}/matches:
+    get:
+      summary: List tournament matches
+      operationId: listTournamentMatches
+      parameters:
+        - { name: tenantId, in: path, required: true, schema: { type: string } }
+        - { name: tournamentId, in: path, required: true, schema: { type: string } }
+      responses:
+        "200": { description: Tenant-scoped matches ordered by schedule }
+  /v1/tenants/{tenantId}/tournaments/{tournamentId}/matches/{matchId}:
+    get:
+      summary: Read match and innings score snapshots
+      operationId: getMatchSnapshot
+      parameters:
+        - { name: tenantId, in: path, required: true, schema: { type: string } }
+        - { name: tournamentId, in: path, required: true, schema: { type: string } }
+        - { name: matchId, in: path, required: true, schema: { type: string } }
+      responses:
+        "200": { description: Frozen match rules, status, innings projections, scorer lease epochs and finalized result without lease holder identity }
+        "404": { description: Match was not found in this tenant }
+  /v1/tenants/{tenantId}/tournaments/{tournamentId}/matches/{matchId}/start:
+    post:
+      summary: Start a match and its first innings
+      operationId: startMatch
+      description: Owner/admin only. The scheduled time must have arrived. Toss winner and decision determine the first batting team; the fixture and match update transactionally.
+      parameters:
+        - { name: tenantId, in: path, required: true, schema: { type: string } }
+        - { name: tournamentId, in: path, required: true, schema: { type: string } }
+        - { name: matchId, in: path, required: true, schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [expectedMatchVersion, tossWinnerTeamId, tossDecision]
+              properties:
+                expectedMatchVersion: { type: integer, minimum: 1 }
+                tossWinnerTeamId: { type: string, pattern: '^[a-fA-F0-9]{24}$' }
+                tossDecision: { type: string, enum: [BAT, BOWL] }
+      responses:
+        "200": { description: Match is live and first innings has been initialized }
+        "409": { description: Stale match, match is not startable, or scheduled time has not arrived }
+  /v1/tenants/{tenantId}/tournaments/{tournamentId}/matches/{matchId}/complete:
+    post:
+      summary: Complete and adjudicate a live match
+      operationId: completeMatch
+      description: Owner/admin only. T10/T20/ODI results must match completed innings scores; a second-innings chase reaching the target completes the match automatically. A tied score under SUPER_OVER or REPLAY requires an explicit audited administrative outcome because tiebreak innings are not yet modeled. Test and custom results also require an explicit audited decision. A no-result decision can close live innings early. Win points default to 2; tie and no-result points default to 1, and each value is frozen in match rules.
+      parameters:
+        - { name: tenantId, in: path, required: true, schema: { type: string } }
+        - { name: tournamentId, in: path, required: true, schema: { type: string } }
+        - { name: matchId, in: path, required: true, schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [expectedMatchVersion, outcome, reason]
+              properties:
+                expectedMatchVersion: { type: integer, minimum: 1 }
+                outcome: { type: string, enum: [HOME_WIN, AWAY_WIN, TIE, NO_RESULT] }
+                reason: { type: string, minLength: 10, maxLength: 500 }
+      responses:
+        "200": { description: Match and fixture completed; both standings rows updated transactionally }
+        "403": { description: Organization owner/admin permission required }
+        "409": { description: Stale version, incomplete innings, scorecard mismatch, or missing administrative tiebreak decision }
+  /v1/tenants/{tenantId}/tournaments/{tournamentId}/matches/{matchId}/scorers:
+    post:
+      summary: Assign a match scorer
+      operationId: assignMatchScorer
+      description: Owner/admin only. The assigned user must have an active membership in this tenant.
+      parameters:
+        - { name: tenantId, in: path, required: true, schema: { type: string } }
+        - { name: tournamentId, in: path, required: true, schema: { type: string } }
+        - { name: matchId, in: path, required: true, schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [userId]
+              properties:
+                userId: { type: string, pattern: '^[a-fA-F0-9]{24}$' }
+      responses:
+        "201": { description: Active scorer assignment created or reactivated }
+        "409": { description: User is not an active tenant member }
+  /v1/tenants/{tenantId}/tournaments/{tournamentId}/matches/{matchId}/scorers/{userId}:
+    delete:
+      summary: Remove a match scorer
+      operationId: removeMatchScorer
+      description: Owner/admin only. Removing the current lease holder revokes the lease and increments its epoch so queued events from that scorer are fenced.
+      parameters:
+        - { name: tenantId, in: path, required: true, schema: { type: string } }
+        - { name: tournamentId, in: path, required: true, schema: { type: string } }
+        - { name: matchId, in: path, required: true, schema: { type: string } }
+        - { name: userId, in: path, required: true, schema: { type: string } }
+      responses:
+        "200": { description: Assignment removed; any held lease is revoked }
+        "403": { description: Organization owner/admin permission required }
+        "404": { description: Match was not found }
+  /v1/tenants/{tenantId}/tournaments/{tournamentId}/matches/{matchId}/innings/{inningsNumber}/lease:
+    post:
+      summary: Acquire, renew or take over a scorer lease
+      operationId: acquireScorerLease
+      description: Assigned scorers and tenant owners/admins may acquire an expired lease or renew their own. Only an owner/admin may take over an active lease, and a reason is required. Every holder change increments leaseEpoch.
+      parameters:
+        - { name: tenantId, in: path, required: true, schema: { type: string } }
+        - { name: tournamentId, in: path, required: true, schema: { type: string } }
+        - { name: matchId, in: path, required: true, schema: { type: string } }
+        - { name: inningsNumber, in: path, required: true, schema: { type: integer, minimum: 1, maximum: 4 } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [expectedLeaseEpoch]
+              properties:
+                expectedLeaseEpoch: { type: integer, minimum: 0 }
+                durationSeconds: { type: integer, minimum: 15, maximum: 120, default: 45 }
+                takeoverReason: { type: string, minLength: 10, maxLength: 500 }
+      responses:
+        "200": { description: Lease epoch and server-calculated expiry }
+        "403": { description: Scorer assignment or takeover permission required }
+        "409": { description: Stale epoch or another scorer holds the active lease }
+        "429": { description: Process-local lease request rate limit exceeded }
+  /v1/tenants/{tenantId}/tournaments/{tournamentId}/matches/{matchId}/innings/{inningsNumber}/deliveries:
+    post:
+      summary: Append an immutable delivery event
+      operationId: appendScoringDelivery
+      description: Assigned scorer with the current unexpired lease only. Delivery event, innings score projection and tenant-private outbox event commit in one transaction. Duplicate clientEventId with identical payload is replay-safe; different payload is rejected. No-ball and wide runs are extras and do not advance legal-ball count. This initial slice records striker dismissals only.
+      parameters:
+        - { name: tenantId, in: path, required: true, schema: { type: string } }
+        - { name: tournamentId, in: path, required: true, schema: { type: string } }
+        - { name: matchId, in: path, required: true, schema: { type: string } }
+        - { name: inningsNumber, in: path, required: true, schema: { type: integer, minimum: 1, maximum: 4 } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [clientEventId, expectedSequence, leaseEpoch, strikerId, bowlerId, deliveryType, batRuns, extraType, extraRuns]
+              properties:
+                clientEventId: { type: string, format: uuid }
+                expectedSequence: { type: integer, minimum: 0, description: Current innings eventHead }
+                leaseEpoch: { type: integer, minimum: 1 }
+                strikerId: { type: string, pattern: '^[a-fA-F0-9]{24}$' }
+                bowlerId: { type: string, pattern: '^[a-fA-F0-9]{24}$' }
+                deliveryType: { type: string, enum: [LEGAL, WIDE, NO_BALL] }
+                batRuns: { type: integer, minimum: 0, maximum: 6 }
+                extraType: { type: string, enum: [NONE, WIDE, NO_BALL, BYE, LEG_BYE] }
+                extraRuns: { type: integer, minimum: 0, maximum: 6 }
+                completedRuns: { type: integer, minimum: 0, maximum: 6, default: 0 }
+                dismissalType: { type: [string, "null"], enum: [BOWLED, CAUGHT, LBW, RUN_OUT, STUMPED, HIT_WICKET, OBSTRUCTING_FIELD, null] }
+                dismissedPlayerId: { type: [string, "null"], pattern: '^[a-fA-F0-9]{24}$' }
+      responses:
+        "201": { description: New event appended and score projection advanced }
+        "200": { description: Idempotent replay of the same accepted event }
+        "400": { description: Invalid cricket delivery or player/team attribution }
+        "403": { description: Active match scorer assignment required }
+        "409": { description: Stale event sequence, stale lease, completed innings or reused idempotency ID }
+        "429": { description: Process-local scoring request rate limit exceeded }
+    get:
+      summary: Read ordered delivery history
+      operationId: listScoringDeliveries
+      parameters:
+        - { name: tenantId, in: path, required: true, schema: { type: string } }
+        - { name: tournamentId, in: path, required: true, schema: { type: string } }
+        - { name: matchId, in: path, required: true, schema: { type: string } }
+        - { name: inningsNumber, in: path, required: true, schema: { type: integer, minimum: 1, maximum: 4 } }
+        - { name: afterSequence, in: query, required: false, schema: { type: integer, minimum: 0, default: 0 } }
+        - { name: limit, in: query, required: false, schema: { type: integer, minimum: 1, maximum: 100, default: 50 } }
+      responses:
+        "200": { description: Ordered tenant-visible DELIVERY and CORRECTION events and exclusive sequence cursor }
+  /v1/tenants/{tenantId}/tournaments/{tournamentId}/matches/{matchId}/innings/{inningsNumber}/deliveries/corrections:
+    post:
+      summary: Append an audited delivery correction
+      operationId: correctScoringDelivery
+      description: Owner/admin only. The target must be an original accepted DELIVERY event in this innings. A correction is a new immutable event; later corrections to the same delivery replace the prior interpretation. The server rebuilds innings runs, wickets, legal balls, extras and automatic completion state from the complete event history in the same transaction. Manual innings closure remains in force. Match result adjudication and any standings update are not yet implemented.
+      parameters:
+        - { name: tenantId, in: path, required: true, schema: { type: string } }
+        - { name: tournamentId, in: path, required: true, schema: { type: string } }
+        - { name: matchId, in: path, required: true, schema: { type: string } }
+        - { name: inningsNumber, in: path, required: true, schema: { type: integer, minimum: 1, maximum: 4 } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [clientEventId, expectedSequence, expectedInningsVersion, targetEventId, reason, revisedDelivery]
+              properties:
+                clientEventId: { type: string, format: uuid }
+                expectedSequence: { type: integer, minimum: 0 }
+                expectedInningsVersion: { type: integer, minimum: 1 }
+                targetEventId: { type: string, pattern: '^[a-fA-F0-9]{24}$' }
+                reason: { type: string, minLength: 10, maxLength: 500 }
+                revisedDelivery:
+                  type: object
+                  additionalProperties: false
+                  required: [strikerId, bowlerId, deliveryType, batRuns, extraType, extraRuns]
+                  properties:
+                    strikerId: { type: string, pattern: '^[a-fA-F0-9]{24}$' }
+                    bowlerId: { type: string, pattern: '^[a-fA-F0-9]{24}$' }
+                    deliveryType: { type: string, enum: [LEGAL, WIDE, NO_BALL] }
+                    batRuns: { type: integer, minimum: 0, maximum: 6 }
+                    extraType: { type: string, enum: [NONE, WIDE, NO_BALL, BYE, LEG_BYE] }
+                    extraRuns: { type: integer, minimum: 0, maximum: 6 }
+                    completedRuns: { type: integer, minimum: 0, maximum: 6, default: 0 }
+                    dismissalType: { type: [string, "null"], enum: [BOWLED, CAUGHT, LBW, RUN_OUT, STUMPED, HIT_WICKET, OBSTRUCTING_FIELD, null] }
+                    dismissedPlayerId: { type: [string, "null"], pattern: '^[a-fA-F0-9]{24}$' }
+      responses:
+        "201": { description: Correction event appended and projection rebuilt }
+        "200": { description: Idempotent replay of the same correction }
+        "400": { description: Invalid revised delivery or player/team attribution }
+        "403": { description: Organization owner/admin permission required }
+        "404": { description: Match, innings or original delivery was not found }
+        "409": { description: Stale event head/version, event-history gap, or correction breaks innings limits }
+        "429": { description: Process-local correction request rate limit exceeded }
+  /v1/tenants/{tenantId}/tournaments/{tournamentId}/matches/{matchId}/innings/{inningsNumber}/close:
+    post:
+      summary: Explicitly close an innings
+      operationId: closeMatchInnings
+      description: Owner/admin only; reason is audited. Limited-overs innings also close automatically at the configured wickets or legal-ball limit.
+      parameters:
+        - { name: tenantId, in: path, required: true, schema: { type: string } }
+        - { name: tournamentId, in: path, required: true, schema: { type: string } }
+        - { name: matchId, in: path, required: true, schema: { type: string } }
+        - { name: inningsNumber, in: path, required: true, schema: { type: integer, minimum: 1, maximum: 4 } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [expectedInningsVersion, reason]
+              properties:
+                expectedInningsVersion: { type: integer, minimum: 1 }
+                reason: { type: string, minLength: 10, maxLength: 500 }
+      responses:
+        "200": { description: Innings closed with an audited reason }
+        "409": { description: Stale innings version or innings is already closed }
+  /v1/tenants/{tenantId}/tournaments/{tournamentId}/matches/{matchId}/innings:
+    post:
+      summary: Start the next innings
+      operationId: startNextMatchInnings
+      description: Owner/admin only. The previous innings must be completed and the configured innings count cannot be exceeded. For two-innings non-Test formats, the second innings must bat in the opposite order.
+      parameters:
+        - { name: tenantId, in: path, required: true, schema: { type: string } }
+        - { name: tournamentId, in: path, required: true, schema: { type: string } }
+        - { name: matchId, in: path, required: true, schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [expectedMatchVersion, battingTeamId]
+              properties:
+                expectedMatchVersion: { type: integer, minimum: 1 }
+                battingTeamId: { type: string, pattern: '^[a-fA-F0-9]{24}$' }
+      responses:
+        "201": { description: Next innings initialized }
+        "409": { description: Previous innings is active, stale match version, or configured innings count is reached }
+  /public/v1/tournaments/{tournamentId}/matches:
+    get:
+      summary: List public tournament match snapshots
+      operationId: listPublicMatches
+      security: []
+      description: Available only when the tournament is public. Returns bounded fixture-ordered score snapshots with team names, match rules, innings totals and result. Player identities and private tenant data are not included. Uses no-store caching and a public-read rate limit.
+      parameters:
+        - { name: tournamentId, in: path, required: true, schema: { type: string, pattern: '^[a-fA-F0-9]{24}$' } }
+        - { name: limit, in: query, required: false, schema: { type: integer, minimum: 1, maximum: 100, default: 25 } }
+        - { name: afterFixtureNumber, in: query, required: false, schema: { type: integer, minimum: 0, default: 0, description: Exclusive fixture-number cursor } }
+      responses:
+        "200": { description: Public match snapshot page and optional next fixture cursor }
+        "400": { description: Invalid list query }
+        "404": { description: Public tournament was not found }
+        "429": { description: Public read rate limit exceeded }
+  /public/v1/tournaments/{tournamentId}/matches/{matchId}:
+    get:
+      summary: Read a public match score snapshot
+      operationId: getPublicMatchSnapshot
+      security: []
+      description: Available only for matches in a public tournament. Returns allowlisted team, rules, score, innings and result fields; no player identity, scorer, lease or tenant-private data is exposed. Uses no-store caching and a public-read rate limit.
+      parameters:
+        - { name: tournamentId, in: path, required: true, schema: { type: string, pattern: '^[a-fA-F0-9]{24}$' } }
+        - { name: matchId, in: path, required: true, schema: { type: string, pattern: '^[a-fA-F0-9]{24}$' } }
+      responses:
+        "200": { description: Versioned match and innings score snapshot }
+        "404": { description: Public tournament or match was not found }
+        "429": { description: Public read rate limit exceeded }
+  /public/v1/tournaments/{tournamentId}/matches/{matchId}/events:
+    get:
+      summary: Subscribe to public match snapshot notices
+      operationId: streamPublicMatchEvents
+      servers:
+        - url: http://localhost:4100
+      security: []
+      description: Opens an SSE stream for a match in a public tournament. On connect/reconnect and after transport recovery, clients receive snapshot_required and fetch the public match snapshot. Redis Pub/Sub does not replay missed events; match.snapshot.changed notices are advisory and may be duplicated. Only match and tournament IDs plus envelope version metadata are published.
+      parameters:
+        - { name: tournamentId, in: path, required: true, schema: { type: string, pattern: '^[a-fA-F0-9]{24}$' } }
+        - { name: matchId, in: path, required: true, schema: { type: string, pattern: '^[a-fA-F0-9]{24}$' } }
+        - { name: Last-Event-ID, in: header, required: false, schema: { type: string }, description: Missed notices are recovered from the snapshot rather than replayed }
+      responses:
+        "200":
+          description: Server-Sent Events stream containing match.snapshot.changed and snapshot_required events
+          content:
+            text/event-stream:
+              schema: { type: string }
+        "404": { description: Public tournament or match was not found }
+        "429": { description: Connection rate or per-IP active-stream limit exceeded }
+        "503": { description: Realtime dependency or stream capacity is unavailable }
+components:
+  securitySchemes:
+    AccessCookie: { type: apiKey, in: cookie, name: ch_access }

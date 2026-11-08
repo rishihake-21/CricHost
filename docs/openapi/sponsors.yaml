@@ -1,0 +1,208 @@
+openapi: 3.1.0
+info:
+  title: CricHost Sponsors API
+  version: 0.1.0
+  description: Tenant-scoped sponsor profiles and campaign inventory with allowlisted public placements. Campaign creatives must be approved, malware-scanned images.
+servers:
+  - url: http://localhost:4000
+security:
+  - AccessCookie: []
+paths:
+  /v1/tenants/{tenantId}/sponsors:
+    parameters:
+      - { name: tenantId, in: path, required: true, schema: { type: string, pattern: '^[a-fA-F0-9]{24}$' } }
+    post:
+      operationId: createSponsor
+      summary: Create a tenant sponsor profile
+      description: Owner/admin only. An optional logo must be an approved SPONSOR_LOGO asset in this tenant.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [name, slug]
+              properties:
+                name: { type: string, minLength: 2, maxLength: 120 }
+                slug: { type: string, pattern: '^[a-z0-9]+(?:-[a-z0-9]+)*$', maxLength: 80 }
+                description: { type: string, maxLength: 1000 }
+                websiteUrl: { type: string, format: uri, pattern: '^https://' }
+                logoAssetId: { type: string, pattern: '^[a-fA-F0-9]{24}$' }
+      responses:
+        "201": { description: Sponsor created; private metadata only }
+        "400": { description: Invalid profile data }
+        "403": { description: Owner/admin permission required }
+        "409": { description: Slug already exists or logo is not approved }
+    get:
+      operationId: listSponsors
+      summary: List sponsors in an organization
+      parameters:
+        - { name: limit, in: query, schema: { type: integer, minimum: 1, maximum: 100, default: 50 } }
+      responses:
+        "200": { description: Tenant-scoped sponsor profiles }
+  /v1/tenants/{tenantId}/sponsors/{sponsorId}:
+    parameters:
+      - { name: tenantId, in: path, required: true, schema: { type: string } }
+      - { name: sponsorId, in: path, required: true, schema: { type: string, pattern: '^[a-fA-F0-9]{24}$' } }
+    patch:
+      operationId: updateSponsor
+      summary: Update a sponsor profile
+      description: Owner/admin only. Uses aggregate version concurrency control.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [expectedVersion]
+              properties:
+                expectedVersion: { type: integer, minimum: 1 }
+                name: { type: string, minLength: 2, maxLength: 120 }
+                description: { type: string, maxLength: 1000 }
+                websiteUrl: { type: [string, "null"], format: uri, pattern: '^https://' }
+                logoAssetId: { type: [string, "null"], pattern: '^[a-fA-F0-9]{24}$' }
+      responses:
+        "200": { description: Sponsor updated }
+        "403": { description: Owner/admin permission required }
+        "404": { description: Sponsor not found in this tenant }
+        "409": { description: Stale version or unapproved logo }
+  /v1/tenants/{tenantId}/tournaments/{tournamentId}/sponsor-campaigns:
+    parameters:
+      - { name: tenantId, in: path, required: true, schema: { type: string, pattern: '^[a-fA-F0-9]{24}$' } }
+      - { name: tournamentId, in: path, required: true, schema: { type: string, pattern: '^[a-fA-F0-9]{24}$' } }
+    post:
+      operationId: createSponsorCampaign
+      summary: Reserve a sponsor placement
+      description: Owner/admin only. The creative must be an approved CAMPAIGN_CREATIVE asset. Dates must fall within the tournament window. Overlapping windows cannot reserve the same placement.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [sponsorId, assetId, placement, startsAt, endsAt, targetUrl]
+              properties:
+                sponsorId: { type: string, pattern: '^[a-fA-F0-9]{24}$' }
+                assetId: { type: string, pattern: '^[a-fA-F0-9]{24}$' }
+                placement: { $ref: '#/components/schemas/Placement' }
+                startsAt: { type: string, format: date-time }
+                endsAt: { type: string, format: date-time }
+                targetUrl: { type: string, format: uri, pattern: '^https://' }
+      responses:
+        "201": { description: Scheduled campaign created }
+        "400": { description: Invalid window or outside tournament dates }
+        "403": { description: Owner/admin permission required }
+        "404": { description: Tournament, sponsor or asset not found }
+        "409": { description: Asset is not approved, placement is reserved, or transaction conflict }
+    get:
+      operationId: listSponsorCampaigns
+      summary: List tournament sponsor campaigns
+      parameters:
+        - { name: limit, in: query, schema: { type: integer, minimum: 1, maximum: 100, default: 50 } }
+        - { name: status, in: query, schema: { type: string, enum: [SCHEDULED, PAUSED, CANCELLED] } }
+      responses:
+        "200": { description: Tenant-scoped campaign metadata }
+  /v1/tenants/{tenantId}/tournaments/{tournamentId}/sponsor-campaigns/{campaignId}:
+    parameters:
+      - { name: tenantId, in: path, required: true, schema: { type: string } }
+      - { name: tournamentId, in: path, required: true, schema: { type: string } }
+      - { name: campaignId, in: path, required: true, schema: { type: string, pattern: '^[a-fA-F0-9]{24}$' } }
+    patch:
+      operationId: updateSponsorCampaign
+      summary: Update a future sponsor campaign
+      description: Owner/admin only. Scheduled or paused campaigns can be edited before their start time. Placement overlap and tournament window checks run again.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [expectedVersion]
+              properties:
+                expectedVersion: { type: integer, minimum: 1 }
+                assetId: { type: string, pattern: '^[a-fA-F0-9]{24}$' }
+                placement: { $ref: '#/components/schemas/Placement' }
+                startsAt: { type: string, format: date-time }
+                endsAt: { type: string, format: date-time }
+                targetUrl: { type: string, format: uri, pattern: '^https://' }
+      responses:
+        "200": { description: Campaign updated }
+        "400": { description: Invalid schedule }
+        "403": { description: Owner/admin permission required }
+        "409": { description: Stale version, occupied placement, or campaign locked }
+  /v1/tenants/{tenantId}/tournaments/{tournamentId}/sponsor-campaigns/{campaignId}/state:
+    post:
+      operationId: changeSponsorCampaignState
+      summary: Pause, resume or cancel a campaign
+      description: Owner/admin only. Resume rechecks placement availability. All actions require a reason and current version.
+      parameters:
+        - { name: tenantId, in: path, required: true, schema: { type: string } }
+        - { name: tournamentId, in: path, required: true, schema: { type: string } }
+        - { name: campaignId, in: path, required: true, schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [expectedVersion, action, reason]
+              properties:
+                expectedVersion: { type: integer, minimum: 1 }
+                action: { type: string, enum: [PAUSE, RESUME, CANCEL] }
+                reason: { type: string, minLength: 3, maxLength: 500 }
+      responses:
+        "200": { description: Campaign state changed }
+        "403": { description: Owner/admin permission required }
+        "404": { description: Campaign not found in this tenant }
+        "409": { description: Stale version or invalid state transition }
+  /public/v1/tournaments/{tournamentId}/sponsors:
+    get:
+      operationId: listPublicSponsorPlacements
+      summary: Read active public sponsor placements
+      security: []
+      parameters:
+        - { name: tournamentId, in: path, required: true, schema: { type: string, pattern: '^[a-fA-F0-9]{24}$' } }
+        - { name: placement, in: query, schema: { $ref: '#/components/schemas/Placement' } }
+      responses:
+        "200": { description: Allowlisted sponsor names, approved creative URLs, placement and campaign window }
+        "404": { description: Public tournament not found }
+        "429": { description: Public read rate limit exceeded }
+  /public/v1/tournaments/{tournamentId}/sponsors/{campaignId}/creative:
+    get:
+      operationId: getPublicSponsorCreative
+      summary: Serve a campaign's approved creative during its active window
+      security: []
+      parameters:
+        - { name: tournamentId, in: path, required: true, schema: { type: string } }
+        - { name: campaignId, in: path, required: true, schema: { type: string } }
+      responses:
+        "200": { description: Scanned and approved PNG or JPEG creative with sandbox and nosniff headers }
+        "404": { description: Campaign is not currently eligible for public delivery }
+        "429": { description: Public read rate limit exceeded }
+  /public/v1/tournaments/{tournamentId}/sponsors/{campaignId}/logo:
+    get:
+      operationId: getPublicSponsorLogo
+      summary: Serve a sponsor's approved logo while one of its campaigns is active
+      security: []
+      parameters:
+        - { name: tournamentId, in: path, required: true, schema: { type: string } }
+        - { name: campaignId, in: path, required: true, schema: { type: string } }
+      responses:
+        "200": { description: Scanned and approved PNG or JPEG logo with sandbox and nosniff headers }
+        "404": { description: Campaign or approved sponsor logo is not currently eligible for public delivery }
+        "429": { description: Public read rate limit exceeded }
+components:
+  securitySchemes:
+    AccessCookie:
+      type: apiKey
+      in: cookie
+      name: ch_access
+  schemas:
+    Placement:
+      type: string
+      enum: [TOURNAMENT_HEADER, FIXTURE_LIST, MATCH_PAGE, SCORECARD]

@@ -1,0 +1,143 @@
+openapi: 3.1.0
+info:
+  title: CricHost Teams and Rosters API
+  version: 0.1.0
+  description: Tournament teams belong to an organization. Players remain independent profiles and enter a roster only through an approved application or a later auction result.
+servers:
+  - url: http://localhost:4000
+security:
+  - AccessCookie: []
+paths:
+  /v1/tenants/{tenantId}/tournaments/{tournamentId}/teams:
+    parameters:
+      - { name: tenantId, in: path, required: true, schema: { type: string } }
+      - { name: tournamentId, in: path, required: true, schema: { type: string } }
+    get:
+      summary: List teams in a tournament
+      operationId: listTournamentTeams
+      responses:
+        "200": { description: Teams with aggregate versions }
+        "403": { description: Active organization membership is required }
+    post:
+      summary: Create a tournament team
+      operationId: createTournamentTeam
+      description: Requires organization owner or administrator. The creator becomes team owner.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [name, slug]
+              properties:
+                name: { type: string, minLength: 2, maxLength: 100 }
+                slug: { type: string, pattern: '^[a-z0-9]+(?:-[a-z0-9]+)*$', maxLength: 80 }
+                shortName: { type: string, maxLength: 20, default: "" }
+      responses:
+        "201": { description: Team created with initial version 1 }
+        "409": { description: Slug already exists or tournament is past team setup }
+  /v1/tenants/{tenantId}/tournaments/{tournamentId}/teams/{teamId}:
+    get:
+      summary: Read a tournament team
+      operationId: getTournamentTeam
+      parameters:
+        - { name: tenantId, in: path, required: true, schema: { type: string } }
+        - { name: tournamentId, in: path, required: true, schema: { type: string } }
+        - { name: teamId, in: path, required: true, schema: { type: string } }
+      responses:
+        "200": { description: Team record and aggregate version }
+        "404": { description: Team was not found in this tournament }
+  /v1/tenants/{tenantId}/tournaments/{tournamentId}/teams/{teamId}/staff:
+    get:
+      summary: List active team staff
+      operationId: listTeamStaff
+      parameters:
+        - { name: tenantId, in: path, required: true, schema: { type: string } }
+        - { name: tournamentId, in: path, required: true, schema: { type: string } }
+        - { name: teamId, in: path, required: true, schema: { type: string } }
+      responses:
+        "200": { description: Active staff names, email addresses, and scoped roles }
+    post:
+      summary: Assign team staff
+      operationId: assignTeamStaff
+      description: Team owner or organization owner/administrator may assign an active organization member as manager or bidder.
+      parameters:
+        - { name: tenantId, in: path, required: true, schema: { type: string } }
+        - { name: tournamentId, in: path, required: true, schema: { type: string } }
+        - { name: teamId, in: path, required: true, schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [userId, role]
+              properties:
+                userId: { type: string, pattern: '^[a-fA-F0-9]{24}$' }
+                role: { type: string, enum: [MANAGER, BIDDER] }
+      responses:
+        "201": { description: Staff role assigned }
+        "403": { description: Team owner permission is required }
+  /v1/tenants/{tenantId}/tournaments/{tournamentId}/teams/{teamId}/roster:
+    get:
+      summary: List current team roster
+      operationId: listTeamRoster
+      parameters:
+        - { name: tenantId, in: path, required: true, schema: { type: string } }
+        - { name: tournamentId, in: path, required: true, schema: { type: string } }
+        - { name: teamId, in: path, required: true, schema: { type: string } }
+        - { name: includeReleased, in: query, schema: { type: boolean, default: false } }
+      responses:
+        "200": { description: Roster entries with consented registration snapshots and assignment history }
+    post:
+      summary: Assign an approved registration to the team
+      operationId: addRosterEntry
+      description: Team owner/manager or organization owner/administrator may assign direct registrations while the tournament is registration-closed or scheduled. expectedVersion is the current team version.
+      parameters:
+        - { name: tenantId, in: path, required: true, schema: { type: string } }
+        - { name: tournamentId, in: path, required: true, schema: { type: string } }
+        - { name: teamId, in: path, required: true, schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [registrationId, expectedVersion]
+              properties:
+                registrationId: { type: string, pattern: '^[a-fA-F0-9]{24}$' }
+                expectedVersion: { type: integer, minimum: 1 }
+                reason: { type: string, minLength: 10, maxLength: 500, description: Required when restoring or transferring a released player }
+      responses:
+        "201": { description: Roster entry created or restored with an immutable history event }
+        "409": { description: Registration is not approved, player is already rostered, stale team version, roster locked, or squad limit reached }
+  /v1/tenants/{tenantId}/tournaments/{tournamentId}/teams/{teamId}/roster/{playerProfileId}/release:
+    post:
+      summary: Release a player from an active roster
+      operationId: releaseRosterEntry
+      description: Release is allowed before live play and preserves the roster record and history.
+      parameters:
+        - { name: tenantId, in: path, required: true, schema: { type: string } }
+        - { name: tournamentId, in: path, required: true, schema: { type: string } }
+        - { name: teamId, in: path, required: true, schema: { type: string } }
+        - { name: playerProfileId, in: path, required: true, schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [expectedVersion, reason]
+              properties:
+                expectedVersion: { type: integer, minimum: 1 }
+                reason: { type: string, minLength: 10, maxLength: 500 }
+      responses:
+        "200": { description: Roster entry marked released with audit and outbox records }
+        "409": { description: Stale roster version or roster is locked }
+components:
+  securitySchemes:
+    AccessCookie: { type: apiKey, in: cookie, name: ch_access }

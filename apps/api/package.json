@@ -7,19 +7,26 @@
     "dev": "tsx watch src/main.ts",
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc --noEmit -p tsconfig.json",
-    "lint": "eslint src"
+    "lint": "eslint src",
+    "worker": "tsx src/worker/main.ts",
+    "auction-worker": "tsx src/worker/auction-main.ts"
   },
   "dependencies": {
     "cors": "^2.8.5",
     "express": "^4.21.2",
     "helmet": "^8.0.0",
     "mongoose": "^8.9.5",
-    "zod": "^3.24.1"
+    "zod": "^3.24.1",
+    "bcryptjs": "^2.4.3",
+    "express-rate-limit": "^7.5.0",
+    "dotenv": "^16.4.7",
+    "redis": "^4.7.0"
   },
   "devDependencies": {
     "@types/cors": "^2.8.17",
     "@types/express": "^4.17.21",
     "tsx": "^4.19.2",
-    "@types/node": "^22.10.5"
+    "@types/node": "^22.10.5",
+    "@types/bcryptjs": "^2.4.6"
   }
 }

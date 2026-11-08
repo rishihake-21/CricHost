@@ -1,0 +1,59 @@
+openapi: 3.1.0
+info:
+  title: CricHost Fixtures and Standings API
+  version: 0.1.0
+  description: First-pass deterministic round-robin generation and standings reads. Fixture outcomes and standings updates are transactionally applied by match adjudication.
+servers:
+  - url: http://localhost:4000
+security:
+  - AccessCookie: []
+paths:
+  /v1/tenants/{tenantId}/tournaments/{tournamentId}/fixtures/generate:
+    post:
+      summary: Generate a seeded round-robin schedule
+      operationId: generateTournamentFixtures
+      description: Requires organization owner or administrator. Tournament must be registration-closed, structure ROUND_ROBIN, have at least two active teams, and each team must meet minimum squad size. Fixture and standing records plus the scheduled lifecycle transition are transactional.
+      parameters:
+        - { name: tenantId, in: path, required: true, schema: { type: string } }
+        - { name: tournamentId, in: path, required: true, schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [expectedTournamentVersion, seed, scheduleStartAt, intervalMinutes, durationMinutes]
+              properties:
+                expectedTournamentVersion: { type: integer, minimum: 1 }
+                seed: { type: string, minLength: 1, maxLength: 100, description: Saved seed for deterministic team shuffle }
+                scheduleStartAt: { type: string, format: date-time, description: RFC 3339 timestamp with explicit UTC offset }
+                intervalMinutes: { type: integer, minimum: 30, maximum: 1440, description: Spacing between sequential fixtures; must be at least durationMinutes }
+                durationMinutes: { type: integer, minimum: 30, maximum: 720 }
+      responses:
+        "201": { description: Fixture generation, schedule and initial standings created; tournament is now scheduled }
+        "400": { description: Invalid request or schedule outside tournament date window }
+        "403": { description: Organization owner or administrator permission required }
+        "409": { description: Stale tournament, unsupported format, missing teams/squad members, or fixtures already generated }
+  /v1/tenants/{tenantId}/tournaments/{tournamentId}/fixtures:
+    get:
+      summary: List tournament fixtures
+      operationId: listTournamentFixtures
+      parameters:
+        - { name: tenantId, in: path, required: true, schema: { type: string } }
+        - { name: tournamentId, in: path, required: true, schema: { type: string } }
+      responses:
+        "200": { description: Fixtures in round and fixture-number order }
+        "404": { description: Tournament was not found }
+  /v1/tenants/{tenantId}/tournaments/{tournamentId}/standings:
+    get:
+      summary: Read tournament standings
+      operationId: getTournamentStandings
+      parameters:
+        - { name: tenantId, in: path, required: true, schema: { type: string } }
+        - { name: tournamentId, in: path, required: true, schema: { type: string } }
+      responses:
+        "200": { description: Current standings including transactional match results, points and supported limited-overs net run rate }
+components:
+  securitySchemes:
+    AccessCookie: { type: apiKey, in: cookie, name: ch_access }

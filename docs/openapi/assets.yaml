@@ -1,0 +1,148 @@
+openapi: 3.1.0
+info:
+  title: CricHost Tenant Asset API
+  version: 0.1.0
+  description: Tenant-scoped image upload intents, private content handling, malware scan and moderation. Uploaded objects remain private until clean scan and owner/admin approval.
+servers:
+  - url: http://localhost:4000
+security:
+  - AccessCookie: []
+paths:
+  /v1/tenants/{tenantId}/assets/upload-intents:
+    post:
+      summary: Create a short-lived signed image upload intent
+      operationId: createAssetUploadIntent
+      description: Owner/admin only. Returns a one-use HMAC-signed upload token in the response body; send it in X-Asset-Upload-Token, never in the URL. Supported formats are PNG and JPEG. The intent expires after the configured short TTL.
+      parameters:
+        - { name: tenantId, in: path, required: true, schema: { type: string, pattern: '^[a-fA-F0-9]{24}$' } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [displayName, purpose, contentType]
+              properties:
+                displayName: { type: string, minLength: 1, maxLength: 120 }
+                purpose: { type: string, enum: [SPONSOR_LOGO, CAMPAIGN_CREATIVE, TEAM_BRANDING, OTHER] }
+                contentType: { type: string, enum: [image/png, image/jpeg] }
+                expectedSizeBytes: { type: integer, minimum: 1, maximum: 26214400 }
+      responses:
+        "201": { description: Upload intent and required upload headers; response is no-store }
+        "400": { description: Invalid upload intent }
+        "403": { description: Owner/admin permission required }
+        "429": { description: Upload intent rate limit exceeded }
+        "503": { description: Upload signing is not configured }
+  /v1/tenants/{tenantId}/assets/{assetId}/content:
+    put:
+      summary: Upload image bytes using the signed intent
+      operationId: uploadAssetContent
+      security:
+        - AssetUploadToken: []
+      description: The token is bound to one tenant and asset, expires, and can be used once. Request Content-Type must match the intent. The API checks the image signature, dimensions and size, removes supported image metadata, stores the file privately and marks it pending malware scan. The route does not require a session cookie.
+      parameters:
+        - { name: tenantId, in: path, required: true, schema: { type: string, pattern: '^[a-fA-F0-9]{24}$' } }
+        - { name: assetId, in: path, required: true, schema: { type: string, pattern: '^[a-fA-F0-9]{24}$' } }
+        - { name: X-Asset-Upload-Token, in: header, required: true, schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          image/png: { schema: { type: string, format: binary } }
+          image/jpeg: { schema: { type: string, format: binary } }
+      responses:
+        "202": { description: Content stored privately and awaiting malware scan }
+        "401": { description: Missing, expired, revoked or invalid upload token }
+        "409": { description: Upload already used or another upload is processing }
+        "410": { description: Upload intent expired }
+        "413": { description: Body or image dimensions exceed configured limits }
+        "415": { description: Content type or image signature is unsupported or mismatched }
+  /v1/tenants/{tenantId}/assets:
+    get:
+      summary: List tenant assets
+      operationId: listTenantAssets
+      parameters:
+        - { name: tenantId, in: path, required: true, schema: { type: string, pattern: '^[a-fA-F0-9]{24}$' } }
+        - { name: limit, in: query, required: false, schema: { type: integer, minimum: 1, maximum: 100, default: 25 } }
+        - { name: beforeId, in: query, required: false, schema: { type: string, pattern: '^[a-fA-F0-9]{24}$' } }
+        - { name: status, in: query, required: false, schema: { type: string, enum: [PENDING_UPLOAD, UPLOADING, PENDING_SCAN, PENDING_REVIEW, APPROVED, REJECTED, DELETED] } }
+      responses:
+        "200": { description: Bounded tenant-scoped asset metadata page; object keys and upload tokens are omitted }
+        "404": { description: Organization was not found }
+  /v1/tenants/{tenantId}/assets/{assetId}:
+    get:
+      summary: Read tenant asset metadata
+      operationId: getTenantAsset
+      parameters:
+        - { name: tenantId, in: path, required: true, schema: { type: string, pattern: '^[a-fA-F0-9]{24}$' } }
+        - { name: assetId, in: path, required: true, schema: { type: string, pattern: '^[a-fA-F0-9]{24}$' } }
+      responses:
+        "200": { description: Tenant asset metadata without storage paths, signatures or upload secrets }
+        "404": { description: Asset was not found }
+  /v1/tenants/{tenantId}/assets/{assetId}/content:
+    get:
+      summary: Read asset content for owner/admin review
+      operationId: getTenantAssetContent
+      description: Content is available only after a clean malware scan and while awaiting review or approved. Response is private/no-store, nosniff and sandboxed.
+      parameters:
+        - { name: tenantId, in: path, required: true, schema: { type: string, pattern: '^[a-fA-F0-9]{24}$' } }
+        - { name: assetId, in: path, required: true, schema: { type: string, pattern: '^[a-fA-F0-9]{24}$' } }
+      responses:
+        "200":
+          description: Private reviewed image content
+          content:
+            image/png: { schema: { type: string, format: binary } }
+            image/jpeg: { schema: { type: string, format: binary } }
+        "403": { description: Owner/admin permission required }
+        "404": { description: Clean reviewed asset content was not found }
+  /v1/tenants/{tenantId}/assets/{assetId}/scan:
+    post:
+      summary: Scan a pending asset with ClamAV
+      operationId: scanTenantAsset
+      description: Owner/admin only. Requires ASSET_CLAMAV_HOST to be configured. A clean scan moves the asset to PENDING_REVIEW; an infected result rejects the asset and removes its stored bytes.
+      parameters:
+        - { name: tenantId, in: path, required: true, schema: { type: string, pattern: '^[a-fA-F0-9]{24}$' } }
+        - { name: assetId, in: path, required: true, schema: { type: string, pattern: '^[a-fA-F0-9]{24}$' } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [expectedVersion]
+              properties:
+                expectedVersion: { type: integer, minimum: 1 }
+      responses:
+        "200": { description: Scan result recorded transactionally }
+        "403": { description: Owner/admin permission required }
+        "409": { description: Stale asset version or asset is not awaiting scan }
+        "503": { description: Scanner is not configured or unavailable; asset remains private and pending }
+  /v1/tenants/{tenantId}/assets/{assetId}/review:
+    post:
+      summary: Approve or reject a scanned asset
+      operationId: reviewTenantAsset
+      description: Owner/admin only. Approval requires a clean ClamAV scan and stripped metadata. Rejection may be used at any non-deleted state and removes stored bytes. Both decisions require an audit reason.
+      parameters:
+        - { name: tenantId, in: path, required: true, schema: { type: string, pattern: '^[a-fA-F0-9]{24}$' } }
+        - { name: assetId, in: path, required: true, schema: { type: string, pattern: '^[a-fA-F0-9]{24}$' } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [expectedVersion, decision, reason]
+              properties:
+                expectedVersion: { type: integer, minimum: 1 }
+                decision: { type: string, enum: [APPROVE, REJECT] }
+                reason: { type: string, minLength: 10, maxLength: 500 }
+      responses:
+        "200": { description: Asset moderation decision persisted with audit and outbox records }
+        "403": { description: Owner/admin permission required }
+        "409": { description: Stale asset, unsupported transition or safety checks incomplete }
+components:
+  securitySchemes:
+    AccessCookie: { type: apiKey, in: cookie, name: ch_access }
+    AssetUploadToken: { type: apiKey, in: header, name: X-Asset-Upload-Token }
