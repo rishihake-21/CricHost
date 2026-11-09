@@ -1,0 +1,148 @@
+openapi: 3.1.0
+info:
+  title: CricHost Platform Administration API
+  version: 0.1.0
+  description: Platform administrator MFA, plan provisioning and outbox dead-letter recovery.
+servers:
+  - url: http://localhost:4000
+security:
+  - AccessCookie: []
+  - BearerAuth: []
+paths:
+  /v1/platform-admin/mfa/status:
+    get:
+      operationId: getPlatformAdminMfaStatus
+      summary: Read MFA enrollment status
+      description: Requires a verified identity whose user ID is configured in PLATFORM_ADMIN_USER_IDS.
+      responses:
+        "200": { description: MFA status; no secret material is returned }
+        "403": { description: User is not an allowlisted platform administrator }
+  /v1/platform-admin/mfa/enroll:
+    post:
+      operationId: beginPlatformAdminMfaEnrollment
+      summary: Start TOTP enrollment
+      description: Requires password reauthentication. The secret and otpauth URI are returned once and the response is no-store.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object, required: [password], properties: { password: { type: string, minLength: 1, maxLength: 100 } }, additionalProperties: false }
+      responses:
+        "201": { description: Temporary TOTP enrollment secret and URI, valid for ten minutes }
+        "401": { description: Password confirmation failed }
+        "403": { description: User is not eligible to enroll }
+        "429": { description: Enrollment rate limit reached }
+  /v1/platform-admin/mfa/confirm:
+    post:
+      operationId: confirmPlatformAdminMfaEnrollment
+      summary: Confirm TOTP enrollment
+      description: Enables MFA and returns ten single-use recovery codes once. Store them securely.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object, required: [code], properties: { code: { type: string, pattern: '^\\d{6}$' } }, additionalProperties: false }
+      responses:
+        "200": { description: MFA enabled; recovery codes are shown once }
+        "401": { description: Authenticator code is invalid }
+        "409": { description: Enrollment expired or no longer pending }
+        "429": { description: MFA attempt limit reached }
+  /v1/platform-admin/mfa/verify:
+    post:
+      operationId: verifyPlatformAdminMfa
+      summary: Create a short-lived privileged session
+      description: Accepts a six-digit TOTP or unused recovery code. Elevated access is bound to this login session for five minutes.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object, required: [code], properties: { code: { type: string, minLength: 6, maxLength: 39 } }, additionalProperties: false }
+      responses:
+        "200": { description: Session elevated for five minutes }
+        "401": { description: MFA code invalid, expired or already used }
+        "403": { description: MFA enrollment or platform administrator access required }
+        "429": { description: MFA attempt limit reached }
+  /v1/platform-admin/plans:
+    get:
+      operationId: listSubscriptionPlans
+      summary: List subscription plan versions
+      description: Requires platform-admin MFA step-up within the previous five minutes.
+      responses:
+        "200": { description: Versioned plan catalog }
+        "403": { description: Platform-admin MFA step-up required }
+    post:
+      operationId: defineSubscriptionPlan
+      summary: Define or transition a subscription plan version
+      description: Requires platform-admin MFA step-up; changes are audited. Plan values remain immutable after creation.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object, required: [code, version, name, status, limits, features], properties: { code: { type: string }, version: { type: integer, minimum: 1 }, name: { type: string }, status: { enum: [DRAFT, ACTIVE, RETIRED] }, limits: { type: object, additionalProperties: { oneOf: [{ type: integer, minimum: 0 }, { type: "null" }] } }, features: { type: array, items: { type: string } } }, additionalProperties: false }
+      responses:
+        "200": { description: Plan version created or transitioned }
+        "400": { description: Definition invalid or enforced limit missing }
+        "403": { description: Platform-admin MFA step-up required }
+        "409": { description: Immutable definition or invalid status transition }
+  /v1/platform-admin/tenants/{tenantId}/subscription:
+    get:
+      operationId: getPlatformTenantSubscription
+      summary: Read a tenant subscription as platform admin
+      description: Requires platform-admin MFA step-up; this privileged read is audited.
+      parameters:
+        - { name: tenantId, in: path, required: true, schema: { type: string, pattern: '^[a-fA-F0-9]{24}$' } }
+      responses:
+        "200": { description: Tenant subscription snapshot }
+        "403": { description: Platform-admin MFA step-up required }
+        "404": { description: Tenant ID is invalid }
+    post:
+      operationId: assignPlatformTenantSubscription
+      summary: Assign an active plan to a tenant
+      description: Requires platform-admin MFA step-up; assignment is transactional and audited.
+      parameters:
+        - { name: tenantId, in: path, required: true, schema: { type: string, pattern: '^[a-fA-F0-9]{24}$' } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object, required: [planCode, status, currentPeriodStart, currentPeriodEnd, reason], properties: { planCode: { type: string }, planVersion: { type: integer, minimum: 1 }, status: { enum: [TRIAL, ACTIVE] }, billingProvider: { enum: [NONE, STRIPE, OTHER] }, currentPeriodStart: { type: string, format: date-time }, currentPeriodEnd: { type: string, format: date-time }, reason: { type: string, minLength: 3, maxLength: 500 } }, additionalProperties: false }
+      responses:
+        "200": { description: Tenant plan assigned }
+        "400": { description: Assignment invalid }
+        "403": { description: Platform-admin MFA step-up required }
+        "404": { description: Tenant or active plan not found }
+  /v1/platform-admin/outbox/dead-letters:
+    get:
+      operationId: listDeadOutboxEvents
+      summary: List dead-letter event metadata
+      description: Requires platform-admin MFA step-up. Event payloads are excluded; the read is audited.
+      parameters:
+        - { name: limit, in: query, required: false, schema: { type: integer, minimum: 1, maximum: 100, default: 50 } }
+      responses:
+        "200": { description: Bounded dead-letter metadata list }
+        "403": { description: Platform-admin MFA step-up required }
+  /v1/platform-admin/outbox/dead-letters/{eventId}/requeue:
+    post:
+      operationId: requeueDeadOutboxEvent
+      summary: Requeue one dead-letter event
+      description: Requires platform-admin MFA step-up and a reason. The event ID and payload are preserved; attempt history is recorded in the audit log.
+      parameters:
+        - { name: eventId, in: path, required: true, schema: { type: string, minLength: 1, maxLength: 80 } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object, required: [reason], properties: { reason: { type: string, minLength: 3, maxLength: 500 } }, additionalProperties: false }
+      responses:
+        "200": { description: Event requeued }
+        "403": { description: Platform-admin MFA step-up required }
+        "404": { description: Dead-letter event not found }
+components:
+  securitySchemes:
+    AccessCookie:
+      type: apiKey
+      in: cookie
+      name: ch_access
+    BearerAuth:
+      type: http
+      scheme: bearer

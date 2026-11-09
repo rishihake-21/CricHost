@@ -26,7 +26,7 @@ function subscriptionDto(subscription: {
   };
 }
 
-/** Internal provisioning entry point. Platform admin and billing adapters are not exposed over HTTP yet. */
+/** Internal provisioning entry point; HTTP plan changes are exposed through the MFA-protected platform-admin router. */
 export async function defineSubscriptionPlan(input: PlanDefinition, requestId: string, actor: { type: "USER" | "SYSTEM"; id?: string }) {
   input = planDefinitionSchema.parse(input);
   if (actor.type === "USER" && !actor.id) throw new AppError(400, "SUBSCRIPTION_ACTOR_REQUIRED", "User initiated plan changes require an actor ID");
@@ -60,7 +60,7 @@ export async function defineSubscriptionPlan(input: PlanDefinition, requestId: s
   });
 }
 
-/** Assigns a versioned plan snapshot; intended for a future platform-admin route or billing webhook. */
+/** Assigns a versioned plan snapshot; HTTP assignments use the MFA-protected platform-admin router. */
 export async function assignTenantPlan(tenantId: string, input: PlanAssignment, requestId: string, actor: { type: "USER" | "SYSTEM"; id?: string }) {
   if (!Types.ObjectId.isValid(tenantId) || !/^[a-f\d]{24}$/i.test(tenantId)) throw new AppError(404, "TENANT_NOT_FOUND", "Organization was not found");
   const assignment = assignPlanSchema.parse(input);
@@ -95,4 +95,9 @@ export async function getTenantSubscription(tenantId: string) {
   const subscription = await TenantSubscription.findOne({ tenantId }).lean();
   if (!subscription) return { tenantId, planCode: null, planVersion: null, status: "UNCONFIGURED", limits: null, features: [], currentPeriodStart: null, currentPeriodEnd: null, billingProvider: "NONE", version: 0, updatedAt: null };
   return subscriptionDto(subscription as unknown as Parameters<typeof subscriptionDto>[0]);
+}
+
+export async function listSubscriptionPlans() {
+  const plans = await SubscriptionPlan.find().sort({ code: 1, version: -1 }).limit(500).lean();
+  return plans.map((plan) => ({ code: plan.code, version: plan.version, name: plan.name, status: plan.status, limits: plan.limits, features: plan.features, createdAt: plan.createdAt, updatedAt: plan.updatedAt }));
 }

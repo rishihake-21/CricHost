@@ -82,7 +82,29 @@ export async function getOutboxQueueSnapshot(observedAt = new Date()): Promise<O
   };
 }
 
-/** Internal operator action. A future HTTP/CLI wrapper must enforce platform-admin authorization and MFA. */
+export async function listDeadOutboxEvents(limit = 50) {
+  if (!Number.isInteger(limit) || limit < 1 || limit > 100) throw new AppError(400, "VALIDATION_FAILED", "limit must be an integer from 1 to 100");
+  const events = await OutboxEvent.find({ status: "DEAD" })
+    .select("eventId tenantId eventType aggregateType aggregateId aggregateVersion attempts replayCount lastErrorCode createdAt updatedAt")
+    .sort({ createdAt: 1, _id: 1 })
+    .limit(limit)
+    .lean();
+  return events.map((event) => ({
+    eventId: event.eventId,
+    tenantId: event.tenantId?.toString() ?? null,
+    eventType: event.eventType,
+    aggregateType: event.aggregateType,
+    aggregateId: event.aggregateId,
+    aggregateVersion: event.aggregateVersion,
+    attempts: event.attempts,
+    replayCount: event.replayCount,
+    lastErrorCode: event.lastErrorCode,
+    createdAt: event.createdAt,
+    updatedAt: event.updatedAt,
+  }));
+}
+
+/** Internal operator action. HTTP callers must pass through the platform-admin authorization and MFA router. */
 export async function requeueDeadOutboxEvent(input: z.input<typeof requeueEventSchema>) {
   const command = requeueEventSchema.parse(input);
   return withTransaction(async (session: ClientSession) => {

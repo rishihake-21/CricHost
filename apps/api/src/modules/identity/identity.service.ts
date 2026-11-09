@@ -103,7 +103,7 @@ export async function refresh(refreshToken: string, userAgent?: string) {
   const refreshExpiresAt = new Date(Date.now() + env.SESSION_REFRESH_DAYS * 86_400_000);
   const rotated = await Session.updateOne(
     { _id: session._id, refreshTokenHash: oldHash, refreshExpiresAt: { $gt: now }, revokedAt: null },
-    { $set: { accessTokenHash: tokenHash(accessToken), refreshTokenHash: tokenHash(nextRefreshToken), accessExpiresAt, refreshExpiresAt, userAgent: userAgent?.slice(0, 300) ?? null, lastSeenAt: new Date() } },
+    { $set: { accessTokenHash: tokenHash(accessToken), refreshTokenHash: tokenHash(nextRefreshToken), accessExpiresAt, refreshExpiresAt, platformMfaVerifiedUntil: null, userAgent: userAgent?.slice(0, 300) ?? null, lastSeenAt: new Date() } },
   );
   if (rotated.modifiedCount !== 1) throw new AppError(401, "INVALID_SESSION", "The session has already been rotated or revoked");
   return { accessToken, refreshToken: nextRefreshToken, accessExpiresAt, refreshExpiresAt };
@@ -120,5 +120,8 @@ export async function findUserForAccessToken(accessToken: string) {
   if (!session) return null;
   const user = await User.findById(session.userId);
   if (!user || user.status !== "ACTIVE") return null;
-  return publicUser({ id: user.id, email: user.email, displayName: user.displayName, emailVerifiedAt: user.emailVerifiedAt });
+  return {
+    principal: publicUser({ id: user.id, email: user.email, displayName: user.displayName, emailVerifiedAt: user.emailVerifiedAt }),
+    sessionId: session.id,
+  };
 }

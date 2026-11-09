@@ -31,7 +31,7 @@ db.outbox_events.createIndex({ status: 1, createdAt: 1 }, { name: "outbox_status
 
 1. Restore Redis connectivity or correct the worker configuration. The worker retries pending events with bounded exponential backoff and jitter.
 2. If pending queue age continues to rise after Redis recovers, confirm the worker can connect to MongoDB and Redis and that its process is running. Adjust `OUTBOX_POLL_INTERVAL_MS` only after checking database and Redis capacity.
-3. Dead-letter events remain durable. The internal `requeueDeadOutboxEvent` service operation resets the delivery attempt count, increments a replay counter and records an audit entry with the operator reason. It has no HTTP or CLI surface and must not be invoked until a caller enforces platform-admin authorization/MFA. Preserve the records and escalate until that control path is available. Do not edit status or attempt fields directly in MongoDB.
+3. Dead-letter events remain durable. After fixing the cause, an allowlisted platform administrator can complete MFA step-up, inspect metadata with `GET /v1/platform-admin/outbox/dead-letters`, and replay a selected event with `POST /v1/platform-admin/outbox/dead-letters/{eventId}/requeue` and a reason. Replay resets the delivery attempt count, increments the replay counter, preserves event ID/payload, and appends an audit entry. Do not edit status or attempt fields directly in MongoDB.
 
 ## Verification and escalation
 

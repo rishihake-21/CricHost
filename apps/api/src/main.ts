@@ -22,6 +22,7 @@ import { assetRouter } from "./modules/assets/asset.routes.js";
 import { publicSponsorRouter, sponsorRouter } from "./modules/sponsors/sponsor.routes.js";
 import { subscriptionRouter } from "./modules/subscriptions/subscription.routes.js";
 import { usageRouter } from "./modules/usage/usage.routes.js";
+import { platformAdminRouter } from "./modules/platform-admin/platform-admin.routes.js";
 
 export function createApp() {
   const app = express();
@@ -40,6 +41,7 @@ export function createApp() {
   });
   app.get("/v1", (_req, res) => res.json({ data: { service: "crichost-api", version: "v1" }, meta: { requestId: res.locals.requestId } }));
   app.use("/v1/auth", identityRouter);
+  app.use("/v1/platform-admin", platformAdminRouter);
   app.use("/v1/tenants", tenantRouter);
   app.use("/v1/tenants", tournamentRouter);
   app.use("/v1/tenants", registrationRouter);

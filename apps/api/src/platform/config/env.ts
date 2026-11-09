@@ -17,6 +17,8 @@ const schema = z.object({
   SESSION_REFRESH_DAYS: z.coerce.number().int().min(1).max(90).default(30),
   BCRYPT_ROUNDS: z.coerce.number().int().min(10).max(14).default(12),
   IDENTITY_EXPOSE_DEV_TOKENS: z.enum(["true", "false"]).default("false"),
+  PLATFORM_ADMIN_USER_IDS: z.string().trim().default(""),
+  PLATFORM_MFA_ENCRYPTION_KEY: z.preprocess((value) => typeof value === "string" && value.trim() === "" ? undefined : value, z.string().regex(/^[a-f\d]{64}$/i, "must be a 32-byte hexadecimal key").optional()),
   ASSET_STORAGE_DIR: z.string().trim().min(1).default("./var/assets"),
   ASSET_UPLOAD_SIGNING_SECRET: z.string().min(32).optional(),
   ASSET_MAX_UPLOAD_BYTES: z.coerce.number().int().min(1024).max(25 * 1024 * 1024).default(5 * 1024 * 1024),
@@ -29,6 +31,19 @@ const parsed = schema.safeParse(process.env);
 if (!parsed.success) {
   const issues = parsed.error.issues.map(({ path, message }) => `${path.join(".")}: ${message}`);
   throw new Error(`Invalid environment configuration: ${issues.join("; ")}`);
+}
+
+const platformAdminUserIds = parsed.data.PLATFORM_ADMIN_USER_IDS
+  ? parsed.data.PLATFORM_ADMIN_USER_IDS.split(",").map((id) => id.trim().toLowerCase()).filter(Boolean)
+  : [];
+if (platformAdminUserIds.some((id) => !/^[a-f\d]{24}$/.test(id))) {
+  throw new Error("PLATFORM_ADMIN_USER_IDS must be a comma-separated list of 24-character user IDs");
+}
+if (new Set(platformAdminUserIds).size !== platformAdminUserIds.length) {
+  throw new Error("PLATFORM_ADMIN_USER_IDS must not contain duplicates");
+}
+if (platformAdminUserIds.length > 0 && !parsed.data.PLATFORM_MFA_ENCRYPTION_KEY) {
+  throw new Error("PLATFORM_MFA_ENCRYPTION_KEY is required when platform administrators are configured");
 }
 
 if (parsed.data.NODE_ENV === "production" && !parsed.data.WEB_ORIGINS?.trim()) {
@@ -44,6 +59,7 @@ if (parsed.data.NODE_ENV === "production" && (!parsed.data.ASSET_UPLOAD_SIGNING_
 
 export const env = {
   ...parsed.data,
+  platformAdminUserIds,
   webOrigins: (parsed.data.WEB_ORIGINS ?? "http://localhost:5173").split(",").map((origin) => origin.trim()).filter(Boolean),
   exposeDevTokens: parsed.data.NODE_ENV !== "production" && parsed.data.IDENTITY_EXPOSE_DEV_TOKENS === "true",
 };

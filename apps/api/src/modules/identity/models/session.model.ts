@@ -7,6 +7,7 @@ const sessionSchema = new Schema({
   accessExpiresAt: { type: Date, required: true },
   refreshExpiresAt: { type: Date, required: true },
   revokedAt: { type: Date, default: null },
+  platformMfaVerifiedUntil: { type: Date, default: null },
   userAgent: { type: String, maxlength: 300, default: null },
   lastSeenAt: { type: Date, default: Date.now },
 }, { timestamps: true, versionKey: false });

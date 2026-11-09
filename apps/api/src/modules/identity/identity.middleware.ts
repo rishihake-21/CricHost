@@ -17,9 +17,10 @@ export const requireIdentity: RequestHandler = (req, res, next) => {
   const bearer = req.header("authorization")?.match(/^Bearer\s+(.+)$/i)?.[1];
   const token = bearer ?? readCookie(req.header("cookie"), "ch_access");
   if (!token) return next(new AppError(401, "AUTHENTICATION_REQUIRED", "Sign in to continue"));
-  void findUserForAccessToken(token).then((user) => {
-    if (!user) return next(new AppError(401, "INVALID_SESSION", "The session is invalid or expired"));
-    res.locals.principal = user;
+  void findUserForAccessToken(token).then((auth) => {
+    if (!auth) return next(new AppError(401, "INVALID_SESSION", "The session is invalid or expired"));
+    res.locals.principal = auth.principal;
+    res.locals.authSessionId = auth.sessionId;
     next();
   }).catch(next);
 };
