@@ -18,10 +18,13 @@ function assertAllowlisted(userId: string): void {
 
 export async function getPlatformMfaStatus(userId: string) {
   assertAllowlisted(userId);
-  const admin = await PlatformAdmin.findOne({ userId }).select("status mfaEnabledAt +pendingMfaExpiresAt").lean();
+  const admin = await PlatformAdmin.findOne({ userId }).select("status mfaEnabledAt +pendingMfaExpiresAt +pendingMfaPurpose").lean();
   if (admin?.status === "DISABLED") return { status: "DISABLED" as const, enabledAt: null };
+  if (admin?.pendingMfaExpiresAt && admin.pendingMfaExpiresAt > new Date()) {
+    if (admin.pendingMfaPurpose === "REPLACEMENT") return { status: "REPLACEMENT_PENDING" as const, enabledAt: admin.mfaEnabledAt ?? null };
+    return { status: "ENROLLMENT_PENDING" as const, enabledAt: null };
+  }
   if (admin?.mfaEnabledAt) return { status: "ENABLED" as const, enabledAt: admin.mfaEnabledAt };
-  if (admin?.pendingMfaExpiresAt && admin.pendingMfaExpiresAt > new Date()) return { status: "ENROLLMENT_PENDING" as const, enabledAt: null };
   return { status: "NOT_CONFIGURED" as const, enabledAt: null };
 }
 
@@ -39,14 +42,16 @@ export async function beginPlatformMfaEnrollment(userId: string, password: strin
   await withTransaction(async (session: ClientSession) => {
     const admin = await PlatformAdmin.findOne({ userId }).session(session);
     if (admin?.status === "DISABLED") throw new AppError(403, "PLATFORM_ADMIN_DISABLED", "Platform administrator access is disabled");
-    if (admin?.mfaEnabledAt) throw new AppError(409, "PLATFORM_MFA_ALREADY_ENABLED", "MFA is already enabled; use the recovery procedure to replace it");
+    if (admin?.mfaEnabledAt) throw new AppError(409, "PLATFORM_MFA_ALREADY_ENABLED", "MFA is already enabled; use the replacement flow after verifying a second factor");
     if (admin) {
       admin.pendingMfaSecretEncrypted = encryptedSecret;
       admin.pendingMfaExpiresAt = pendingMfaExpiresAt;
+      admin.pendingMfaPurpose = "ENROLLMENT";
+      admin.pendingMfaSessionId = null;
       admin.aggregateVersion += 1;
       await admin.save({ session });
     } else {
-      await PlatformAdmin.create([{ userId, status: "ACTIVE", pendingMfaSecretEncrypted: encryptedSecret, pendingMfaExpiresAt }], { session });
+      await PlatformAdmin.create([{ userId, status: "ACTIVE", pendingMfaSecretEncrypted: encryptedSecret, pendingMfaExpiresAt, pendingMfaPurpose: "ENROLLMENT" }], { session });
     }
     await recordAudit({ actorType: "USER", actorId: userId, action: "platform_admin.mfa.enrollment_started", outcome: "SUCCEEDED", resourceType: "platform_admin", resourceId: userId, requestId, metadata: { expiresAt: pendingMfaExpiresAt } }, session);
   });
@@ -58,8 +63,8 @@ export async function confirmPlatformMfaEnrollment(userId: string, code: string,
   assertAllowlisted(userId);
   return withTransaction(async (session: ClientSession) => {
     const now = new Date();
-    const admin = await PlatformAdmin.findOne({ userId, status: "ACTIVE", mfaEnabledAt: null, pendingMfaExpiresAt: { $gt: now } })
-      .select("+pendingMfaSecretEncrypted +lastAcceptedTotpStep +recoveryCodeHashes")
+    const admin = await PlatformAdmin.findOne({ userId, status: "ACTIVE", mfaEnabledAt: null, pendingMfaPurpose: { $in: ["ENROLLMENT", null] }, pendingMfaExpiresAt: { $gt: now } })
+      .select("+pendingMfaSecretEncrypted +pendingMfaPurpose +lastAcceptedTotpStep +recoveryCodeHashes")
       .session(session);
     if (!admin?.pendingMfaSecretEncrypted) throw new AppError(409, "PLATFORM_MFA_ENROLLMENT_EXPIRED", "Start a new MFA enrollment before confirming");
 
@@ -71,6 +76,8 @@ export async function confirmPlatformMfaEnrollment(userId: string, code: string,
     admin.mfaSecretEncrypted = admin.pendingMfaSecretEncrypted;
     admin.pendingMfaSecretEncrypted = null;
     admin.pendingMfaExpiresAt = null;
+    admin.pendingMfaPurpose = null;
+    admin.pendingMfaSessionId = null;
     admin.mfaEnabledAt = now;
     admin.lastAcceptedTotpStep = acceptedStep;
     admin.recoveryCodeHashes = recoveryCodes.map((recoveryCode) => {
@@ -82,6 +89,81 @@ export async function confirmPlatformMfaEnrollment(userId: string, code: string,
     await admin.save({ session });
     await recordAudit({ actorType: "USER", actorId: userId, action: "platform_admin.mfa.enabled", outcome: "SUCCEEDED", resourceType: "platform_admin", resourceId: userId, requestId, metadata: { recoveryCodeCount: recoveryCodes.length } }, session);
     return { enabledAt: now, recoveryCodes };
+  });
+}
+
+export async function beginPlatformMfaReplacement(userId: string, currentSessionId: string, password: string, requestId: string) {
+  assertAllowlisted(userId);
+  if (!Types.ObjectId.isValid(currentSessionId)) throw new AppError(401, "INVALID_SESSION", "The session is invalid or expired");
+  if (Buffer.byteLength(password, "utf8") > 72) throw new AppError(400, "VALIDATION_FAILED", "Password confirmation is invalid");
+  const user = await User.findOne({ _id: userId, status: "ACTIVE" }).select("+passwordHash email emailVerifiedAt");
+  const passwordMatches = user ? await bcrypt.compare(password, user.passwordHash) : false;
+  if (!user || !passwordMatches) throw new AppError(401, "INVALID_CREDENTIALS", "Password confirmation failed");
+  if (!user.emailVerifiedAt) throw new AppError(403, "EMAIL_NOT_VERIFIED", "Verify the administrator account before replacing MFA");
+
+  const secret = generateTotpSecret();
+  const encryptedSecret = encryptMfaSecret(secret);
+  const pendingMfaExpiresAt = new Date(Date.now() + 10 * 60_000);
+  await withTransaction(async (session: ClientSession) => {
+    const now = new Date();
+    const elevatedSession = await Session.exists({ _id: currentSessionId, userId, revokedAt: null, accessExpiresAt: { $gt: now }, refreshExpiresAt: { $gt: now }, platformMfaVerifiedUntil: { $gt: now } }).session(session);
+    if (!elevatedSession) throw new AppError(403, "PLATFORM_MFA_STEP_UP_REQUIRED", "Verify MFA before replacing the authenticator");
+    const admin = await PlatformAdmin.findOne({ userId, status: "ACTIVE", mfaEnabledAt: { $ne: null } }).session(session);
+    if (!admin) throw new AppError(409, "PLATFORM_MFA_NOT_ENABLED", "Enable platform MFA before replacing it");
+    admin.pendingMfaSecretEncrypted = encryptedSecret;
+    admin.pendingMfaExpiresAt = pendingMfaExpiresAt;
+    admin.pendingMfaPurpose = "REPLACEMENT";
+    admin.pendingMfaSessionId = new Types.ObjectId(currentSessionId);
+    admin.aggregateVersion += 1;
+    await admin.save({ session });
+    await recordAudit({ actorType: "USER", actorId: userId, action: "platform_admin.mfa.replacement_started", outcome: "SUCCEEDED", resourceType: "platform_admin", resourceId: userId, requestId, metadata: { expiresAt: pendingMfaExpiresAt } }, session);
+  });
+
+  return { secret, otpauthUri: createTotpUri(user.email, secret), expiresAt: pendingMfaExpiresAt };
+}
+
+export async function confirmPlatformMfaReplacement(userId: string, currentSessionId: string, code: string, requestId: string) {
+  assertAllowlisted(userId);
+  if (!Types.ObjectId.isValid(currentSessionId)) throw new AppError(401, "INVALID_SESSION", "The session is invalid or expired");
+  return withTransaction(async (session: ClientSession) => {
+    const now = new Date();
+    const admin = await PlatformAdmin.findOne({ userId, status: "ACTIVE", mfaEnabledAt: { $ne: null }, pendingMfaPurpose: "REPLACEMENT", pendingMfaSessionId: currentSessionId, pendingMfaExpiresAt: { $gt: now } })
+      .select("+pendingMfaSecretEncrypted +pendingMfaPurpose +pendingMfaSessionId +lastAcceptedTotpStep +recoveryCodeHashes")
+      .session(session);
+    if (!admin?.pendingMfaSecretEncrypted) throw new AppError(409, "PLATFORM_MFA_REPLACEMENT_EXPIRED", "Start a new MFA replacement before confirming");
+
+    const acceptedStep = verifyTotpCode(decryptMfaSecret(admin.pendingMfaSecretEncrypted), code, now.getTime());
+    if (acceptedStep === null) throw new AppError(401, "PLATFORM_MFA_CODE_INVALID", "The new authenticator code is invalid or expired");
+
+    const recoveryCodes = generateRecoveryCodes();
+    admin.mfaSecretEncrypted = admin.pendingMfaSecretEncrypted;
+    admin.pendingMfaSecretEncrypted = null;
+    admin.pendingMfaExpiresAt = null;
+    admin.pendingMfaPurpose = null;
+    admin.pendingMfaSessionId = null;
+    admin.lastAcceptedTotpStep = Math.max(admin.lastAcceptedTotpStep, acceptedStep);
+    admin.recoveryCodeHashes = recoveryCodes.map((recoveryCode) => {
+      const hash = hashRecoveryCode(recoveryCode);
+      if (!hash) throw new Error("Generated platform recovery code is invalid");
+      return hash;
+    });
+    admin.aggregateVersion += 1;
+    await admin.save({ session });
+
+    const revoked = await Session.updateMany(
+      { userId, _id: { $ne: currentSessionId }, revokedAt: null },
+      { $set: { revokedAt: now, platformMfaVerifiedUntil: null } },
+      { session },
+    );
+    const currentSession = await Session.updateOne(
+      { _id: currentSessionId, userId, revokedAt: null, accessExpiresAt: { $gt: now }, refreshExpiresAt: { $gt: now } },
+      { $set: { platformMfaVerifiedUntil: null } },
+      { session },
+    );
+    if (currentSession.matchedCount !== 1) throw new AppError(401, "INVALID_SESSION", "The session is invalid or expired");
+
+    await recordAudit({ actorType: "USER", actorId: userId, action: "platform_admin.mfa.replaced", outcome: "SUCCEEDED", resourceType: "platform_admin", resourceId: userId, requestId, metadata: { recoveryCodeCount: recoveryCodes.length, revokedSessionCount: revoked.modifiedCount } }, session);
+    return { replacedAt: now, recoveryCodes, revokedSessionCount: revoked.modifiedCount };
   });
 }
 

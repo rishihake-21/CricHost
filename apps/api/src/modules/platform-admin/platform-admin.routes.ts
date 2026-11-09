@@ -9,7 +9,7 @@ import { listDeadOutboxEvents, requeueDeadOutboxEvent } from "../outbox/outbox.s
 import { assignTenantPlan, defineSubscriptionPlan, getTenantSubscription, listSubscriptionPlans } from "../subscriptions/subscription.service.js";
 import { assignPlanSchema, planDefinitionSchema } from "../subscriptions/subscription.schemas.js";
 import { requireAllowlistedPlatformIdentity, requirePlatformAdminStepUp } from "./platform-admin.authorization.js";
-import { beginPlatformMfaEnrollment, confirmPlatformMfaEnrollment, getPlatformMfaStatus, verifyPlatformAdminStepUp } from "./platform-admin.service.js";
+import { beginPlatformMfaEnrollment, beginPlatformMfaReplacement, confirmPlatformMfaEnrollment, confirmPlatformMfaReplacement, getPlatformMfaStatus, verifyPlatformAdminStepUp } from "./platform-admin.service.js";
 
 export const platformAdminRouter = Router();
 
@@ -71,7 +71,28 @@ platformAdminRouter.post("/mfa/verify", mfaAttemptLimiter, asyncHandler(async (r
   res.json({ data: { verification }, meta: { requestId: res.locals.requestId } });
 }));
 
+platformAdminRouter.post("/mfa/replacement/confirm", mfaAttemptLimiter, asyncHandler(async (req, res) => {
+  const parsed = codeSchema.safeParse(req.body);
+  if (!parsed.success) throw new AppError(400, "VALIDATION_FAILED", "Provide a six-digit code from the new authenticator");
+  if (!/^\d{6}$/.test(parsed.data.code)) throw new AppError(400, "VALIDATION_FAILED", "Provide a six-digit code from the new authenticator");
+  const principal = res.locals.principal as { id: string };
+  const sessionId = res.locals.authSessionId as string | undefined;
+  if (!sessionId) throw new AppError(401, "INVALID_SESSION", "The session is invalid or expired");
+  const confirmation = await confirmPlatformMfaReplacement(principal.id, sessionId, parsed.data.code, String(res.locals.requestId));
+  res.json({ data: { confirmation }, meta: { requestId: res.locals.requestId } });
+}));
+
 platformAdminRouter.use(requirePlatformAdminStepUp);
+
+platformAdminRouter.post("/mfa/replacement", enrollmentLimiter, asyncHandler(async (req, res) => {
+  const parsed = enrollmentSchema.safeParse(req.body);
+  if (!parsed.success) throw new AppError(400, "VALIDATION_FAILED", "Password confirmation is invalid");
+  const principal = res.locals.principal as { id: string };
+  const sessionId = res.locals.authSessionId as string | undefined;
+  if (!sessionId) throw new AppError(401, "INVALID_SESSION", "The session is invalid or expired");
+  const replacement = await beginPlatformMfaReplacement(principal.id, sessionId, parsed.data.password, String(res.locals.requestId));
+  res.status(201).json({ data: { replacement }, meta: { requestId: res.locals.requestId } });
+}));
 
 platformAdminRouter.get("/plans", asyncHandler(async (_req, res) => {
   const principal = res.locals.principal as { id: string };

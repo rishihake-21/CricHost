@@ -6,6 +6,8 @@ const platformAdminSchema = new Schema({
   mfaSecretEncrypted: { type: String, default: null, select: false, maxlength: 500 },
   pendingMfaSecretEncrypted: { type: String, default: null, select: false, maxlength: 500 },
   pendingMfaExpiresAt: { type: Date, default: null, select: false },
+  pendingMfaPurpose: { type: String, enum: ["ENROLLMENT", "REPLACEMENT"], default: null, select: false },
+  pendingMfaSessionId: { type: Schema.Types.ObjectId, ref: "Session", default: null, select: false },
   mfaEnabledAt: { type: Date, default: null },
   lastAcceptedTotpStep: { type: Number, required: true, default: -1, min: -1, select: false },
   recoveryCodeHashes: { type: [String], required: true, default: [], select: false },

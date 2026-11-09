@@ -41,7 +41,7 @@ paths:
         required: true
         content:
           application/json:
-            schema: { type: object, required: [code], properties: { code: { type: string, pattern: '^\\d{6}$' } }, additionalProperties: false }
+            schema: { type: object, required: [code], properties: { code: { type: string, pattern: '^[0-9]{6}$' } }, additionalProperties: false }
       responses:
         "200": { description: MFA enabled; recovery codes are shown once }
         "401": { description: Authenticator code is invalid }
@@ -62,6 +62,37 @@ paths:
         "401": { description: MFA code invalid, expired or already used }
         "403": { description: MFA enrollment or platform administrator access required }
         "429": { description: MFA attempt limit reached }
+  /v1/platform-admin/mfa/replacement:
+    post:
+      operationId: beginPlatformAdminMfaReplacement
+      summary: Start authenticator replacement
+      description: Requires a recent platform-admin MFA step-up and password confirmation. The current authenticator remains active until replacement confirmation.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object, required: [password], properties: { password: { type: string, minLength: 1, maxLength: 100 } }, additionalProperties: false }
+      responses:
+        "201": { description: Temporary replacement TOTP secret and URI, valid for ten minutes }
+        "401": { description: Password confirmation failed }
+        "403": { description: Platform-admin MFA step-up required }
+        "429": { description: Replacement attempt limit reached }
+  /v1/platform-admin/mfa/replacement/confirm:
+    post:
+      operationId: confirmPlatformAdminMfaReplacement
+      summary: Confirm authenticator replacement
+      description: Requires the same active login session that started the replacement and a code from the new authenticator. Starting requires recent platform-admin MFA step-up and password confirmation. Rotates recovery codes, revokes other sessions, and clears step-up on the current session.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object, required: [code], properties: { code: { type: string, pattern: '^[0-9]{6}$' } }, additionalProperties: false }
+      responses:
+        "200": { description: MFA replaced and new one-time recovery codes returned }
+        "401": { description: Session is invalid or new authenticator code is invalid }
+        "403": { description: User is not an allowlisted platform administrator }
+        "409": { description: Replacement expired or no longer pending }
+        "429": { description: Replacement confirmation attempt limit reached }
   /v1/platform-admin/plans:
     get:
       operationId: listSubscriptionPlans

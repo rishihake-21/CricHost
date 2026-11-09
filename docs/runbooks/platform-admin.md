@@ -22,13 +22,13 @@
 
 ## Handle lost credentials or suspected compromise
 
-1. If a recovery code remains, use it once at `/v1/platform-admin/mfa/verify`, then rotate or revoke the affected login session and report the event to the security owner.
+1. If a recovery code remains, use it once at `/v1/platform-admin/mfa/verify`, then call `POST /v1/platform-admin/mfa/replacement` with the account password. Register its returned URI and call `POST /v1/platform-admin/mfa/replacement/confirm` in the same login session with a six-digit code from the new authenticator within ten minutes. Save the newly returned recovery codes. Confirmation revokes all other sessions and clears privileged step-up on the current session. Report the event to the security owner.
 2. If no recovery code is available, remove the affected ID from `PLATFORM_ADMIN_USER_IDS` and redeploy immediately to deny platform-admin API access. Preserve relevant audit records and follow the incident process.
-3. The application currently has no supported MFA reset/replacement workflow. Do not manually edit encrypted secret fields or mark MFA enabled in MongoDB. A recovery requires an approved, reviewed operational procedure and tracked change; implement the reset workflow before production reliance on this control.
+3. If no recovery code is available, the application has no supported break-glass MFA reset workflow. Do not manually edit encrypted secret fields or mark MFA enabled in MongoDB. A recovery requires an approved, reviewed operational procedure and tracked change; implement the reset workflow before production reliance on this control.
 4. If the encryption key is lost or changed, existing TOTP seeds cannot be decrypted. Keep the key backed up in the secret manager's recovery process and coordinate key rotation with a supported MFA reset before changing it.
 
 ## Operational limits
 
 - Enrollment and step-up attempt limits are process-local. A shared store is required before running multiple API replicas; otherwise an attacker may distribute attempts across replicas and normal users may receive inconsistent limits.
 - Sensitive platform-admin responses are not cacheable. Dead-letter listing excludes event payloads; replay requires a reason and writes an audit entry.
-- Production first-admin bootstrap, email delivery, recovery/reset automation, shared rate limiting, and identity lifecycle controls remain release gates.
+- Production first-admin bootstrap, email delivery, break-glass recovery/reset automation, shared rate limiting, and identity lifecycle controls remain release gates.
