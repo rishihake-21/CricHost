@@ -8,6 +8,7 @@ import { PlayerProfile } from "../players/models/player-profile.model.js";
 import { Tournament } from "../tournaments/models/tournament.model.js";
 import { PlayerRegistration } from "./models/player-registration.model.js";
 import type { RegistrationDecision } from "./registration.schemas.js";
+import { assertWithinQuota } from "../usage/usage.service.js";
 
 function registrationDto(item: { _id: Types.ObjectId; tenantId: Types.ObjectId; tournamentId: Types.ObjectId; playerProfileId: Types.ObjectId; status: string; profileSnapshot: Record<string, unknown>; appliedAt: Date; reviewedAt: Date | null; reviewedById: Types.ObjectId | null; decisionReason: string | null; aggregateVersion: number }) {
   return { id: item._id.toString(), tenantId: item.tenantId.toString(), tournamentId: item.tournamentId.toString(), playerProfileId: item.playerProfileId.toString(), status: item.status, profile: item.profileSnapshot, appliedAt: item.appliedAt, reviewedAt: item.reviewedAt, reviewedById: item.reviewedById?.toString() ?? null, decisionReason: item.decisionReason, version: item.aggregateVersion };
@@ -25,6 +26,7 @@ export async function applyToTournament(tenantId: string, tournamentId: string, 
       if (tournament.status !== "REGISTRATION_OPEN" || tournament.registrationOpensAt > now || tournament.registrationClosesAt <= now) {
         throw new AppError(409, "REGISTRATION_CLOSED", "This tournament is not accepting applications");
       }
+      await assertWithinQuota(tenantId, "registrationsPerTournament", session, (activeSession) => PlayerRegistration.countDocuments({ tenantId, tournamentId }).session(activeSession));
       const profileSnapshot = {
         displayName: profile.displayName,
         bio: profile.bio,

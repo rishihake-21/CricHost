@@ -11,6 +11,7 @@ import { recordAudit } from "../audit/audit.service.js";
 import { enqueueOutboxEvent } from "../outbox/outbox.service.js";
 import { Asset } from "./models/asset.model.js";
 import type { CreateAssetUploadIntentInput } from "./asset.schemas.js";
+import { assertAssetStorageQuota } from "../usage/usage.service.js";
 
 const validId = (id: string) => Types.ObjectId.isValid(id) && /^[a-f\d]{24}$/i.test(id);
 const maxImagePixels = 40_000_000;
@@ -197,6 +198,7 @@ export async function createAssetUploadIntent(tenantId: string, actorId: string,
   const nonce = randomBytes(24).toString("base64url");
   const expiresAt = new Date(Date.now() + env.ASSET_UPLOAD_TTL_SECONDS * 1000);
   return withTransaction(async (session: ClientSession) => {
+    await assertAssetStorageQuota(tenantId, input.expectedSizeBytes ?? env.ASSET_MAX_UPLOAD_BYTES, session);
     const asset = new Asset({
       tenantId, createdById: actorId, displayName: input.displayName, purpose: input.purpose,
       requestedContentType: input.contentType, expectedSizeBytes: input.expectedSizeBytes ?? null,

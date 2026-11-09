@@ -6,6 +6,7 @@ import { recordAudit } from "../audit/audit.service.js";
 import { enqueueOutboxEvent } from "../outbox/outbox.service.js";
 import { Tournament } from "./models/tournament.model.js";
 import { createTournamentSchema, type CreateTournamentInput, type TournamentRules } from "./tournament.schemas.js";
+import { assertWithinQuota } from "../usage/usage.service.js";
 
 const dto = (item: { _id: Types.ObjectId; name: string; slug: string; season: string; description: string; timezone: string; locale: string; visibility: string; registrationOpensAt: Date; registrationClosesAt: Date; startAt: Date; endAt: Date; format: string; structure: string; rulesVersion: number; rules: unknown; status: string; aggregateVersion: number; createdAt: Date }) => ({
   id: item._id.toString(), name: item.name, slug: item.slug, season: item.season,
@@ -19,6 +20,7 @@ const dto = (item: { _id: Types.ObjectId; name: string; slug: string; season: st
 export async function createTournament(tenantId: string, userId: string, requestId: string, input: CreateTournamentInput) {
   try {
     return await withTransaction(async (session: ClientSession) => {
+      await assertWithinQuota(tenantId, "activeTournaments", session, (activeSession) => Tournament.countDocuments({ tenantId, status: { $in: ["DRAFT", "REGISTRATION_OPEN", "REGISTRATION_CLOSED", "SCHEDULED", "LIVE"] } }).session(activeSession));
       const [tournament] = await Tournament.create([{
         tenantId, createdById: userId,
         ...input,

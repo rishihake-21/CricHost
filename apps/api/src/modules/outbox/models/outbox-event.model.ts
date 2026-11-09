@@ -12,6 +12,7 @@ const outboxEventSchema = new Schema({
   data: { type: Schema.Types.Mixed, required: true },
   status: { type: String, enum: ["PENDING", "PROCESSING", "PUBLISHED", "DEAD"], default: "PENDING", required: true },
   attempts: { type: Number, default: 0, min: 0, required: true },
+  replayCount: { type: Number, default: 0, min: 0, required: true },
   availableAt: { type: Date, default: Date.now, required: true },
   workerId: { type: String, default: null, maxlength: 120 },
   leaseToken: { type: String, default: null, select: false },
@@ -21,6 +22,7 @@ const outboxEventSchema = new Schema({
 }, { timestamps: true, versionKey: false, collection: "outbox_events", strict: "throw" });
 
 outboxEventSchema.index({ status: 1, availableAt: 1, createdAt: 1 }, { name: "outbox_pending_claim" });
+outboxEventSchema.index({ status: 1, createdAt: 1 }, { name: "outbox_status_created" });
 outboxEventSchema.index({ status: 1, leaseExpiresAt: 1 }, { name: "outbox_expired_lease" });
 outboxEventSchema.index({ tenantId: 1, aggregateType: 1, aggregateId: 1, aggregateVersion: 1 }, { name: "outbox_aggregate_order" });
 

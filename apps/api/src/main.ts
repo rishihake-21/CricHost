@@ -20,6 +20,8 @@ import { matchRouter } from "./modules/matches/match.routes.js";
 import { publicMatchRouter } from "./modules/matches/public-match.routes.js";
 import { assetRouter } from "./modules/assets/asset.routes.js";
 import { publicSponsorRouter, sponsorRouter } from "./modules/sponsors/sponsor.routes.js";
+import { subscriptionRouter } from "./modules/subscriptions/subscription.routes.js";
+import { usageRouter } from "./modules/usage/usage.routes.js";
 
 export function createApp() {
   const app = express();
@@ -47,6 +49,8 @@ export function createApp() {
   app.use("/v1/tenants", matchRouter);
   app.use("/v1/tenants", assetRouter);
   app.use("/v1/tenants", sponsorRouter);
+  app.use("/v1/tenants", subscriptionRouter);
+  app.use("/v1/tenants", usageRouter);
   app.use("/public/v1/tournaments", publicAuctionRouter);
   app.use("/public/v1/tournaments", publicMatchRouter);
   app.use("/public/v1/tournaments", publicSponsorRouter);

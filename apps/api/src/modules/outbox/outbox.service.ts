@@ -1,6 +1,9 @@
 import { randomUUID } from "node:crypto";
 import type { ClientSession } from "mongoose";
 import { z } from "zod";
+import { AppError } from "../../platform/errors/app-error.js";
+import { withTransaction } from "../../platform/db/transaction.js";
+import { recordAudit } from "../audit/audit.service.js";
 import { OutboxEvent } from "./models/outbox-event.model.js";
 
 const eventSchema = z.object({
@@ -13,6 +16,18 @@ const eventSchema = z.object({
   aggregateVersion: z.number().int().positive(),
   visibility: z.enum(["INTERNAL", "TENANT_PRIVATE", "TEAM_PRIVATE", "PUBLIC"]),
   data: z.record(z.string(), z.unknown()),
+});
+
+const requeueEventSchema = z.object({
+  eventId: z.string().trim().min(1).max(80),
+  actorType: z.enum(["USER", "SYSTEM"]),
+  actorId: z.string().regex(/^[a-f\d]{24}$/i).optional(),
+  requestId: z.string().min(1).max(80),
+  reason: z.string().trim().min(3).max(500),
+}).strict().superRefine((input, context) => {
+  if (input.actorType === "USER" && !input.actorId) {
+    context.addIssue({ code: "custom", message: "A user actor ID is required", path: ["actorId"] });
+  }
 });
 
 export type NewOutboxEvent = z.infer<typeof eventSchema>;
@@ -30,6 +45,80 @@ export type ClaimedOutboxEvent = {
   attempts: number;
   leaseToken: string;
 };
+
+export type OutboxQueueSnapshot = {
+  observedAt: Date;
+  pendingCount: number;
+  processingCount: number;
+  deadCount: number;
+  expiredLeaseCount: number;
+  oldestPendingAt: Date | null;
+  oldestPendingAgeMs: number;
+  oldestDeadAt: Date | null;
+  oldestDeadAgeMs: number;
+};
+
+export async function getOutboxQueueSnapshot(observedAt = new Date()): Promise<OutboxQueueSnapshot> {
+  const [pendingCount, processingCount, deadCount, expiredLeaseCount, oldestPending, oldestDead] = await Promise.all([
+    OutboxEvent.countDocuments({ status: "PENDING" }),
+    OutboxEvent.countDocuments({ status: "PROCESSING" }),
+    OutboxEvent.countDocuments({ status: "DEAD" }),
+    OutboxEvent.countDocuments({ status: "PROCESSING", leaseExpiresAt: { $lte: observedAt } }),
+    OutboxEvent.findOne({ status: "PENDING" }).sort({ createdAt: 1 }).select("createdAt").lean(),
+    OutboxEvent.findOne({ status: "DEAD" }).sort({ createdAt: 1 }).select("createdAt").lean(),
+  ]);
+  const oldestPendingAt = oldestPending?.createdAt ?? null;
+  const oldestDeadAt = oldestDead?.createdAt ?? null;
+  return {
+    observedAt,
+    pendingCount,
+    processingCount,
+    deadCount,
+    expiredLeaseCount,
+    oldestPendingAt,
+    oldestPendingAgeMs: oldestPendingAt ? Math.max(0, observedAt.getTime() - oldestPendingAt.getTime()) : 0,
+    oldestDeadAt,
+    oldestDeadAgeMs: oldestDeadAt ? Math.max(0, observedAt.getTime() - oldestDeadAt.getTime()) : 0,
+  };
+}
+
+/** Internal operator action. A future HTTP/CLI wrapper must enforce platform-admin authorization and MFA. */
+export async function requeueDeadOutboxEvent(input: z.input<typeof requeueEventSchema>) {
+  const command = requeueEventSchema.parse(input);
+  return withTransaction(async (session: ClientSession) => {
+    const event = await OutboxEvent.findOne({ eventId: command.eventId, status: "DEAD" }).select("+leaseToken").session(session);
+    if (!event) throw new AppError(404, "OUTBOX_DEAD_EVENT_NOT_FOUND", "Dead-letter event was not found");
+
+    const previousAttempts = event.attempts;
+    const previousErrorCode = event.lastErrorCode;
+    const now = new Date();
+    event.status = "PENDING";
+    event.attempts = 0;
+    event.replayCount = (event.replayCount ?? 0) + 1;
+    event.availableAt = now;
+    event.workerId = null;
+    event.leaseToken = null;
+    event.leaseExpiresAt = null;
+    event.publishedAt = null;
+    event.lastErrorCode = null;
+    await event.save({ session });
+
+    await recordAudit({
+      ...(event.tenantId ? { tenantId: event.tenantId.toString() } : {}),
+      actorType: command.actorType,
+      ...(command.actorId ? { actorId: command.actorId } : {}),
+      action: "outbox.event.requeued",
+      outcome: "SUCCEEDED",
+      resourceType: "outbox_event",
+      resourceId: event.eventId,
+      requestId: command.requestId,
+      reason: command.reason,
+      metadata: { eventType: event.eventType, previousAttempts, previousErrorCode, replayCount: event.replayCount },
+    }, session);
+
+    return { eventId: event.eventId, status: event.status, availableAt: event.availableAt, replayCount: event.replayCount };
+  });
+}
 
 export async function enqueueOutboxEvent(input: NewOutboxEvent, session: ClientSession): Promise<string> {
   const event = eventSchema.parse(input);

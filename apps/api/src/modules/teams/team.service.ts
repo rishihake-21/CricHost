@@ -12,6 +12,7 @@ import { Team } from "./models/team.model.js";
 import { RosterEntry } from "../rosters/models/roster-entry.model.js";
 import type { AddRosterEntryInput, CreateTeamInput, ReleaseRosterEntryInput } from "./team.schemas.js";
 import { Auction } from "../auctions/models/auction.model.js";
+import { assertWithinQuota } from "../usage/usage.service.js";
 
 type TeamDoc = { _id: Types.ObjectId; tenantId: Types.ObjectId; tournamentId: Types.ObjectId; name: string; slug: string; shortName: string; status: string; aggregateVersion: number; createdAt: Date };
 const teamDto = (team: TeamDoc) => ({ id: team._id.toString(), tenantId: team.tenantId.toString(), tournamentId: team.tournamentId.toString(), name: team.name, slug: team.slug, shortName: team.shortName, status: team.status, version: team.aggregateVersion, createdAt: team.createdAt });
@@ -24,6 +25,7 @@ export async function createTeam(tenantId: string, tournamentId: string, creator
       const tournament = await Tournament.findOne({ _id: tournamentId, tenantId }).session(session);
       if (!tournament) throw new AppError(404, "TOURNAMENT_NOT_FOUND", "Tournament was not found");
       if (!["DRAFT", "REGISTRATION_OPEN", "REGISTRATION_CLOSED"].includes(tournament.status)) throw new AppError(409, "TEAMS_LOCKED", "Teams can only be created before the tournament is scheduled");
+      await assertWithinQuota(tenantId, "teamsPerTournament", session, (activeSession) => Team.countDocuments({ tenantId, tournamentId, status: "ACTIVE" }).session(activeSession));
       const [team] = await Team.create([{ tenantId, tournamentId, ...input, createdById: creatorId, status: "ACTIVE", aggregateVersion: 1 }], { session });
       if (!team) throw new Error("Team creation returned no record");
       await TeamStaff.create([{ tenantId, tournamentId, teamId: team._id, userId: creatorId, roles: ["OWNER"], status: "ACTIVE", assignedById: creatorId }], { session });

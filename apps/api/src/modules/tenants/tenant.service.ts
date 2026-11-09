@@ -6,6 +6,7 @@ import type { CreateTenantInput } from "./tenant.schemas.js";
 import { withTransaction } from "../../platform/db/transaction.js";
 import { recordAudit } from "../audit/audit.service.js";
 import { enqueueOutboxEvent } from "../outbox/outbox.service.js";
+import { TenantSubscription } from "../subscriptions/models/tenant-subscription.model.js";
 
 function tenantDto(tenant: { id: string; name: string; slug: string; timezone: string; locale: string; status: string; createdAt: Date }) {
   return { id: tenant.id, name: tenant.name, slug: tenant.slug, timezone: tenant.timezone, locale: tenant.locale, status: tenant.status, createdAt: tenant.createdAt };
@@ -23,6 +24,7 @@ export async function createTenant(input: CreateTenantInput, userId: string, req
       }], { session });
       if (!tenant) throw new Error("Tenant creation returned no record");
       await Membership.create([{ tenantId: tenant._id, userId, role: "OWNER", status: "ACTIVE", joinedAt: new Date() }], { session });
+      await TenantSubscription.create([{ tenantId: tenant._id, status: "UNCONFIGURED", planCode: null, planVersion: null, limitsSnapshot: null, featuresSnapshot: [], billingProvider: "NONE", aggregateVersion: 1 }], { session });
       await recordAudit({
         actorType: "USER", actorId: userId, action: "tenant.created", outcome: "SUCCEEDED",
         resourceType: "tenant", resourceId: tenant.id, requestId,

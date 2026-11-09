@@ -9,6 +9,7 @@ import { Tournament } from "../tournaments/models/tournament.model.js";
 import { Sponsor } from "./models/sponsor.model.js";
 import { SponsorCampaign } from "./models/sponsor-campaign.model.js";
 import type { CreateCampaignInput, CreateSponsorInput, UpdateCampaignInput, UpdateSponsorInput } from "./sponsor.schemas.js";
+import { assertWithinQuota } from "../usage/usage.service.js";
 
 const validId = (id: string) => Types.ObjectId.isValid(id) && /^[a-f\d]{24}$/i.test(id);
 const sponsorDto = (sponsor: { _id: Types.ObjectId; name: string; slug: string; description: string; websiteUrl: string | null; logoAssetId: Types.ObjectId | null; aggregateVersion: number; createdAt: Date; updatedAt: Date }) => ({
@@ -103,6 +104,7 @@ export async function createCampaign(tenantId: string, tournamentId: string, act
     if (!sponsor) throw new AppError(404, "SPONSOR_NOT_FOUND", "Sponsor was not found");
     await requireApprovedAsset(tenantId, input.assetId, "CAMPAIGN_CREATIVE", session);
     await reservePlacement(tenantId, tournamentId, input.placement, startsAt, endsAt, session);
+    await assertWithinQuota(tenantId, "sponsorCampaignsPerTournament", session, (activeSession) => SponsorCampaign.countDocuments({ tenantId, tournamentId, status: { $in: ["SCHEDULED", "PAUSED"] } }).session(activeSession));
     const [campaign] = await SponsorCampaign.create([{
       tenantId, tournamentId, sponsorId: input.sponsorId, assetId: input.assetId,
       placement: input.placement, startsAt, endsAt, targetUrl: input.targetUrl,

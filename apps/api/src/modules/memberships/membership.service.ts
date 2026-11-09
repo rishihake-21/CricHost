@@ -14,6 +14,7 @@ import { User } from "../identity/models/user.model.js";
 import { Invitation } from "./models/invitation.model.js";
 import { Membership } from "./models/membership.model.js";
 import type { CreateInvitationInput } from "./membership.schemas.js";
+import { assertWithinQuota } from "../usage/usage.service.js";
 
 const newToken = () => randomBytes(32).toString("base64url");
 const hashToken = (token: string) => createHash("sha256").update(token).digest("hex");
@@ -56,6 +57,11 @@ export async function createTenantInvitation(tenantId: string, actorId: string, 
         await recordAudit({ actorType: "USER", actorId, tenantId, action: "tenant.invitation.expired", outcome: "SUCCEEDED", resourceType: "tenant_invitation", resourceId: prior.id, requestId, metadata: { role: prior.role } }, session);
         await enqueueOutboxEvent({ tenantId, eventType: "tenant.invitation.expired", schemaVersion: 1, aggregateType: "tenant_invitation", aggregateId: prior.id, aggregateVersion: prior.aggregateVersion, visibility: "TENANT_PRIVATE", data: { invitationId: prior.id, status: prior.status } }, session);
       }
+      await assertWithinQuota(tenantId, "activeMembers", session, async (activeSession) => {
+        const activeMembers = await Membership.countDocuments({ tenantId, status: "ACTIVE" }).session(activeSession);
+        const pendingInvitations = await Invitation.countDocuments({ tenantId, status: "PENDING", expiresAt: { $gt: now } }).session(activeSession);
+        return activeMembers + pendingInvitations;
+      });
       const [invitation] = await Invitation.create([{
         tenantId, email, role: input.role, status: "PENDING", tokenHash: hashToken(token), invitedById: actorId,
         expiresAt: new Date(now.getTime() + 7 * 24 * 60 * 60_000),

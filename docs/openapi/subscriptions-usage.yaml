@@ -1,0 +1,38 @@
+openapi: 3.1.0
+info:
+  title: CricHost Subscriptions and Usage API
+  version: 0.1.0
+  description: Tenant subscription status and private usage snapshots. Plan provisioning remains an internal platform operation.
+servers:
+  - url: http://localhost:4000
+security:
+  - AccessCookie: []
+paths:
+  /v1/tenants/{tenantId}/subscription:
+    get:
+      operationId: getTenantSubscription
+      summary: Read a tenant subscription
+      description: Owner/admin only. Includes the assigned versioned feature and quota snapshot; billing provider references and internal concurrency fields are never returned.
+      parameters:
+        - { name: tenantId, in: path, required: true, schema: { type: string, pattern: '^[a-fA-F0-9]{24}$' } }
+      responses:
+        "200": { description: Subscription status, plan snapshot, quota limits, feature flags and current period; status is UNCONFIGURED when no plan is assigned }
+        "403": { description: Owner/admin permission required }
+        "404": { description: Tenant not found or caller is not a member }
+  /v1/tenants/{tenantId}/usage:
+    get:
+      operationId: getTenantUsage
+      summary: Read a tenant usage snapshot
+      description: Owner/admin only. Reports current resource usage, per-tournament counts, asset bytes, and recorded period counters. Dimensions shown as not instrumented are not billing inputs.
+      parameters:
+        - { name: tenantId, in: path, required: true, schema: { type: string, pattern: '^[a-fA-F0-9]{24}$' } }
+      responses:
+        "200": { description: Private usage snapshot with limits and tracking status }
+        "403": { description: Owner/admin permission required }
+        "404": { description: Tenant not found or caller is not a member }
+components:
+  securitySchemes:
+    AccessCookie:
+      type: apiKey
+      in: cookie
+      name: ch_access
